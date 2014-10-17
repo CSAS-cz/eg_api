@@ -1,0 +1,446 @@
+FORMAT: 1A
+HOST: https://www.csast.csas.cz/webapi/api/v1
+
+# WebAPI Basics
+
+This API is a HTTP-1.1 REST service that provides access to user and accounting data of Erste Bank customers. It is a general purpose API with no single predefined use in mind. The following requirements need to be met:
+
+* highly secure, as sensitive userdata is provided
+* fine granular access/permissions (e.g. allow read-only on certain business objects, or different permissions for different clients on the same account, ...)
+* low protocol overhead, as it is may be used on smart phones with potentially low bandwidth or high base latency
+* low payload overhead (e.g. JSON instead of XML)
+* no special-purpose calls for a business case, but atomic, reusable calls
+
+## Server calls
+
+Server calls are done via *https* by using one of the following HTTP methods:
+
+Method  | Idempotent  | Change state  | Purpose
+------- | ----------- | ------------- | ------------------------------------------------------------------
+GET     | yes         | no            | select: read-only call (e.g. get account list)
+POST    | no          | yes           | create: add a new resource (e.g. create a new transaction), call a function
+PUT     | yes         | yes           | update: change an existing resource (e.g. set a message read, lock a card)
+DELETE  | yes         | yes           | delete: remove an existing resource (e.g. delete a message)
+
+Resources are all URIs that deliver business data (e.g. accounts, transactions, messages, ...) while functions are calls that may or may not return data but do not operate on business data (e.g. login).
+
+All data provided by the client has to be in UTF-8 encoding. 
+
+GET, PUT und DELETE calls are idempotent. It does not matter for the server state if this call is used only once or multiple times (with the same resource/payload). POST calls, usually creating new stuff, should not be repeated by clients, because they will result in duplicated data.
+
+Successfull DELETE calls result in a "HTTP 204 - No content" reply and the resource being removed.
+
+The server must support gzip'ed content and all clients are strongly recommendet to request gzip'ed content via the HTTP header:
+
+    Accept-Encoding: gzip
+
+
+### Authentication and Authorization
+
+This API is not responsible for authentication (i.e. validate if a user/client/principal is who he/she/it claims to be, e.g. by checking user&passwords) but only of authorization (i.e. validate if a user/client/principal can access a resource here and now). Therefore, it is based on a token security concept and only needs to check the validity of such tokens which a client provides for each call as proof it may access the requested data. 
+
+As far as this API is concerned, this token is a "black box" which is part of each client request. The API provides the received token to a server-side verification library or service, and if the token turns out to be valid *for the specific requested call*, the business logic is executed. The API does not have to parse the token itself.
+
+This API can work with any type of token, as long as the following assumptions are valid:
+
+* The token already is in a format/encoding allowed to be passed as HTTP 'Authorization' header field.
+* The token is maximum 1024 bytes in length (as it has to be transferred with each request, and on mobile phones every ms counts). However, average tokens should be much shorter (e.g. 256 bytes) to reduce upload traffic for each and every request.
+* It is possible (for a library) to verify the validity of the token.
+* It is possible (for a library) to derive the user (Verfueger) from the token.
+* It is possible (for a library) to derive the **fine granular permissions** from the token. This includes a separate read and write permission down to an individual **business object level** (e.g. one specific account, message or template). However, a token should alternatively refer permissions in larger units, especially on entities the User owns, e.g. "all my accounts".
+
+**Note:** OAuth 2.0 bearer token will be used, which encapsulate SAML permissions. This match the above requirements.
+
+The token in request is sent by the client as HTTP `Authorization:` header:
+
+    Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
+The content of the token and how to generate/validate it is not part of this specification.
+
+#### Authentication in file downloads in old browsers
+
+In order to overcome the limitations in old browsers, some file download endpoints supports file downloads as a result of form post calls. These calls return the required file immediately. Authorization information is carried in the hidden field of the form post call. 
+
+    <form action="/api/netbanking/my/cards/id/invoices/2014_02/pdf" method="post"  accept="application/pdf">
+       <input type="hidden" name="access_token" value="<token>">
+       <input type="submit" value="download" />
+    </form>
+
+
+
+#### Authentication in file uploads in old browsers
+
+For limitations similar in [File downloads in old browsers](#authentication-in-file-downloads-in-old-browsers), some upload endpoints support passing the authorization token in a hidden form field in multipart form posts.
+
+
+    <form action="/api/backoffice/donation/ngos/<id>/qlogo" method="post" enctype="multipart/form-data" accept="application/json">
+       <input type="hidden" name="access_token" value="<token>">
+       <input type="file" name="file">
+       <input type="submit" value="upload" />
+    </form>
+
+
+### Session Cookies
+
+In theory, each server call could be stateless and only use the token to reconstruct state. However, this will probably result in a performance impact, can be a cost issue due increased backend/host requests, and also would render current load balancing infrastructure useless.
+
+Therefore, each time an server call is done that does not provide a standard Java Session Cookie (`JSESSIONID`), the reply will contain a new such session cookie. It is in the interest of the client to re-provide this cookie with each follow up call to make use of server-side caching. If the cookie is not re-sent, the call still will work but a slower reply will be the result.
+
+    Set-Cookie: JSESSIONID=Zw4LQndKc2ffHXM7r9NY9r2nBVbJytpnh3lt6p2R9cTQLFNz5CG5!-2028444187;
+
+
+The server will store the last-provided authentication token in the server-side session upon the first call. If the token and the session ID still match on a successive call, than it is not necessary for the server to re-validate the token as long as it is not expired. If however the token does not match to the session ID, which means the client is suddenly providing a new token, the session is immediately destroyed and a new one is created based on the new provided token. The resulting new `JSESSIONID` is sent to the client for re-use in successive calls.
+
+Session Cookies are valid for 2 minutes or the validity of the authentication token, whichever is *shorter*.
+
+### Content types and languages
+
+The client has to specify what type of content it expects via ordinary HTTP headers:
+
+    GET /path/to/some/resource HTTP/1.1
+    Host: www.example.org
+    User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:16.0) Gecko/20100101 Firefox/16.0
+    Accept: application/json
+    Accept-Language: en-US
+
+
+**Accept**: What type of content should be returned. Currently, only `application/json` is supported. This is also the default if no `Accept:` header is given.
+
+**Accept-Language**: In case language-dependent content is in the reply (GUI texts, pre-formatted amounts or dates, ...), the language-dependent infos of this language should be used by the server to translate/pre-format. If no `Accept-Language:` is given, `en-US` is assumed. The server may ignore this field in case the user has a server-side language setting which overrules any request setting.
+
+### Server side pagination
+
+All calls that return lists support pagination. The client can request the content in pages, providing a `size` and a `page` number. Those are given as URL parameters like the following example:
+
+    GET /path/to/some/resource?size=25&page=1
+
+
+`page` count starts at zero, so 0 is the first page, 1 the second and so on. If `size` is given without any `page`, `page`=0 is assumed. 
+
+There is no predefined `size` limit. If it is omitted, all records are returned in one large list. However, some calls might introduce a size limit due the fact that a certain backend would be overloaded by returning too many items in one call - in such a case, the individual call descriptions will state that clearly.
+
+### Server side sorting
+
+Some calls allow their output to be pre-sorted. This can be requested by giving the `sort` and `order` URI parameters, for example:
+
+    GET /path/to/some/resource?sort=date&order=desc
+
+Each call description below states if and what fields it supports to sort. The optional `order` can be either `asc` or `desc` (case insensitive), with `asc` as default. If no `sort` is given, a random order has to be assumed that can change between calls.
+
+Sorting multiple fields at the same time is possible by comma-separating the fields and their corresponding `sort` orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding `order` entries are considered to be `asc`. For example:
+
+    GET /path/to/some/resource?sort=date,title,name&order=desc,,desc
+
+For paginated output, sorting is done before pagination, so the whole list not only one single page is sorted. Resources/Lists requested without giving any sorting parameters should be considered to be in random order.
+ 
+### Alternate header names
+
+In some cases it might not be possible for an application to change certain HTTP headers. For example, a website calling this API via JavaScript from within an older browser might not be able to override the `Accept:` or `Accept-Language:` header. In such a case corresponding alternate header names prefixed with `X-ebsapi-` can be used. If the server receives such headers, they take precedence over any non-prefixed header that might also be included in the call.
+
+    X-ebsapi-Accept: application/json
+    X-ebsapi-Accept-Language: en-US
+    X-ebsapi-Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+ 
+Note: This is not a complete list. All HTTP headers mentioned in this document can be prefixed. 
+
+### Last modified
+
+Some calls support the HTTP last modified mechanism (this is stated in those calls that do). For such calls, the client may provide a standard RFC-complaint HTTP `If-Modified-Since` header, and resources delivered by that calls include a `Last-Modified` header. 
+
+    GET /path/to/some/resource HTTP/1.1
+    Host: www.example.org
+    User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:16.0) Gecko/20100101 Firefox/16.0
+    If-Modified-Since: Wed, 19 Oct 2005 10:50:00 GMT
+
+If the resource was not modified since the given timestamp, a HTTP `304` is returned (means "not modified"). If the resource was updated on this time or thereafter, the resource is returned. Note: this does not do delta handling. If `If-Modified-Since` is used on a list, all or none items are returned, not only the part of the list that is newer.
+
+Since HTTP's `If-Modified-Since` only supports seconds, but data on the server might be more precise, the following mechanism is in place: If a resource has a last modified date of a fraction of a second, and a client requests this resource within the very same second, the server returns the resource as `Last-Modified` with the second *rounded down*. E.g. for a resource that has a timestamp of 12:30:00.123, 12:30:00 is returned. If the request is done at a later point in time, the `Last-Modified` second is to be *rounded up*. This is done to avoid that the client might miss an update due the higher precision of time on the server than in the HTTP headers,  at the cost that in the - rare - event, that if a resource is queried at the very same second it was changed, it might be queried twice due the rounded down timestamp.
+
+As an alternative to `If-Modified-Since`, the API also supports a `X-ebsapi-Last-Modified`/`X-ebsapi-If-Modified-Since` header pair. Those accept an XML datetime format (`yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`) with millisecond precision.
+
+    GET /path/to/some/resource HTTP/1.1
+    Host: www.example.org
+    User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:16.0) Gecko/20100101 Firefox/16.0
+    X-ebsapi-If-Modified-Since: 2013-06-05T16:42:22.709Z
+
+ 
+### Batch Calls (todo)
+
+Sometimes a client wants to combine individual calls to one bigger call, so the amount of calls and the HTTP overhead is lower (e.g. netbanking app after login needs accounts, templates and messages).
+
+There is no dedicated batch call mechanism. Clients are asked to use [HTTP 1.1 Pipelining](http://en.wikipedia.org/wiki/HTTP_pipelining) for that, and the server is supposed to support that.
+
+## Server request
+
+### JSON
+
+In case of POST / PUT / DELETE requests business data is accepted as JSON data (if it is not binary data). See [Wikipedia](http://en.wikipedia.org/wiki/JSON) for details on JSON.
+
+Empty arrays `[]` and `null` values must be omitted from input data.
+
+### Error handling
+
+JSR-303 validation is applied to the provided JSON input data according to the appropriate data model.
+
+## Server reply
+
+All payload data returned by the server is in UTF-8 encoding.
+
+If *no error* occurred, the server replies with a HTTP 200 status code and the payload contains the JSON with all relevant data, or a HTTP 204 status code and no body/payload if the call does not produce data. For *logical errors* like empty fields, field parsing errors, missing mandatory fields etc. the server replies with HTTP 400 and a JSON error object (see section below). For *framework and meta-errors* (authentication failed, wrong URL, ...) the corresponding HTTP Error codes are used and the payload contains a JSON error object.
+If a resource can't be found due to inactive products in BackEnd or wrong id ( e.g. GET /netbanking/my/contracts/buildings/{id} ) the server replies with HTTP 404 and a JSON error object describing the reason (e.g. ID_NOT_FOUND or PRODUCT_NOT_ACTIVATED) has to be returned.
+
+Code  | Purpose
+----- | ---------------------------------------------------------------------------
+200   | indicates no technical error happened
+204   | like 200, but no body/payload will be sent back
+400*  | logical error in parsing request (e.g. ID does not exist, mandatory field missing, ...)
+403*  | user not logged in, invalid token, etc.
+404*  | this kind of resource does not exist
+415   | unsupported media type (Accept/Accept-Language unsupported)
+500   | internal error happened (a Java exception happened)
+
+**Legend:** * = returns JSON error object
+
+### JSON
+
+Business data is returned as JSON data (if it is not binary data like images). See [Wikipedia](http://en.wikipedia.org/wiki/JSON) for details on JSON.
+
+JSON data has no root object and it should look like
+
+    {
+    ... do this ...
+    }
+
+but not like this
+
+    "objectname" : {
+    ... don't do this ...
+    }
+
+
+Undefined or unused optional fields are omitted in the JSON output and must not be delivered as `null` nor as empty strings. If the distinction between empty and not available is necessary, of course an empty string is still a valid response. 
+
+Empty arrays `[]` should be omitted from output data. 
+
+### Error handling
+
+Errors are given as codes of `WORDS_AND_UNDERSCORES` (see also [Naming Conventions](#naming-conventions)). It is the responsibility of the FE client application to convert them into something useful and using the language of the user. Error codes are returned in the error wrapper object.
+
+If a call fails with one of the 40x HTTP codes, the payload will contain a top-level `error` JSON array. It contains one entry per logical error that describes more in detail what happened. Errors come in two flavors, as following example output shows:
+
+    "errors": [
+    {
+        "error":"SOME_ERROR_CODE",
+    },
+    {
+        "error":"ANOTHER_ERROR_CODE",
+        "scope":"account.amount.currency"
+    }
+    {
+        "error":"OTHER_ERROR_CODE",
+        "scope":"transactions[3].senderName"
+    }
+    ]
+
+Simple errors only contain an *error* key with some textual error code, for example "`SESSION_EXPIRED`". Validation errors contain in addition to the *error* key a *scope* key that refers to the input element that this error applies to. The scope is fully qualified within the JSON input using dots, array items are qualified via `[123]`.
+
+The following common error codes are defined:
+
+Error code              | Purpose
+----------------------- | --------------------------------------
+`TOKEN_NOT_ALLOWED`     | The provided token does not allow this call.
+`TOKEN_EXPIRED`         | The provided token is expired.
+`TOKEN_INVALID`         | The provided token not a valid token (syntax error).
+`FIELD_NOSORT`          | The field (given in the "scope" field of the error) can not be used for sorting (does not exist, does not support sorting).
+`RESOURCE_NOSORT`       | Resource does not support sorting.
+`INTERNAL_SERVER_ERROR` | A technical exception occurred.
+
+If a call can produce additional errors, they are listed in each call separately.
+
+### Pagination
+
+If a request requires paginated output (see [Server calls/Server side Pagination](#server-side-pagination) above), the reply will contain in addition to the array with a page's items the following fields:
+
+    {
+    "lastModified": (DATETIME),
+    "pageNumber": (INTEGER),
+    "pageCount": (INTEGER),
+    "pageSize": (INTEGER),
+    "page": [
+        { ...item...},
+        { ...item...},
+        { ...item...}
+    ]
+    }
+
+
+**last_modified**: The latest update to any one items in the list. Comparing this date to the last received such date can help the client to detect if the whole list was changed in the meantime.
+
+**page_number**: The page number of provided list items.
+
+**page_count**: The total count of pages as result of calculation using the requested page size.
+
+**page_size**: The page size used. Either the number supplied by the client in request is returned here, or in case there is a page size limit for call and its value is less than the requested one, the actual size is returned.
+
+**page**: The page's items. Note that `page` can be any name, e.g. `accounts`.
+
+## Naming Conventions
+
+### JSON Fields
+
+* Field names are in English.
+* Field names are written camelCase.
+* The first letter is always lowercase. 
+* Arrays have plural names and end with `s` or `es`. 
+* Abbreviations are always written with first letter uppercase (IBAN -> Iban).
+* The main ID of an object is called just `id`.
+* All other referred ids are given via the name of the referred object plus `Id'.
+* Field names do not have a prefix of the object type, so it's not `accountName` but just `name`.
+
+Examples:
+
+    {
+    "id": 1,
+    "anotherId": 5,
+    "remoteIds": [ 7, 8, 9 ],
+    "flyingWalruses": [ "walrus 1", "walrus 2" ],
+    "iban": "some IBAN",
+    "someOtherIban": "other IBAN",
+    "flags": [ ... array ... ]
+    }
+
+
+### Error codes
+
+* Error codes are English.
+* Error codes are given all uppercase.
+* Underscores separate multi-word codes. 
+* Error codes are self-explanatory descriptions, not internal codes or strings without obvious meaning. 
+* Error codes follow a NOUN or NOUN_ADJECTIVE pattern.
+* Error codes are *not* UI-Texts and need a mapping first.
+* Error codes may get long if that helps to increase clarity.
+
+Examples:
+
+    ID_NOT_FOUND
+    SYNTAX_ERROR
+    DAILY_LIMIT_EXCEEDED
+    WALRUS_FLEW_AWAY
+    CLARITY_INCREASED_BY_VERY_LONG_ERROR_CODES
+
+### Flags
+
+Entries for the (FLAG) datatype (definition below) follow the same conventions as JSON-Fields. In addition the following rules apply:
+
+* Flags follow a "noun" or "nounAdjective" pattern.
+
+Examples:
+
+    defaultAccount
+    domesticPaymentAllowed
+
+
+## STS / Federated Login
+
+Security Token Service functionality provided by Federated Login  solution is described in FL documentation.
+
+ ENV   | URL                                            | Testuser
+------ | ---------------------------------------------- | --------------
+ ENTW  | https://logind.imcplus.net/sts/clients         | 101467721 / BHKWXESwDV
+ FAT   | https://login.fat.sparkasse.at/sts/clients     | 304844216 / testen123
+ PROD  | tbd                                            | 
+
+## API URLs
+
+Prefixes in URL are used to differentiate the environment version of API. Every local country implementation should define it as following example:
+
+ ENV   | HOST
+------ | ----------------------------------------------
+ ENTW  | tbd
+ FAT   | https://api.fat.sparkasse.at/rest/
+ UAT   | https://api.uat.sparkasse.at/rest/
+ PROD  | tbd
+
+### Postman URLs
+
+All API endpoints below can be called via:
+
+    {HOST}/rest-web/api/{ENDPOINT}?access_token={TOKEN}
+
+
+For the `HOST`, see table above. The `ENDPONT` is the individual call, e.g. `/netbanking/my/accounts`. The `TOKEN` is the access token obtained from the Federated Login STS service.
+
+## API Calls
+
+The following calls are handled by the API, which might or might not be deployed at the same servers as the authentication BackEnd used by the client to obtain the necessary permission/tokens.
+
+ ENV   | URL
+------ | -------------------------------------------------------------
+ ENTW  | https://mobileappsd.imcplus.net/rest/
+ FAT   | https://api.fat.sparkasse.at/rest/
+ PROD  | https://api.sparkasse.at/rest/
+
+All Client-based calls require a token issued by the authentication system to be present in the HTTP headers (see [Authentication & Security](#authentication-and-authorization) above). Only anonymous API calls (like press releases or exchange-rates) may be used without a token.
+
+Design guidelines for this API calls are following:
+
+* URI-Path starting with `/my/...` refer to the owner of the authorization token.
+* URI elements with plural nouns refer to lists of objects, e.g. `/my/accounts`. They support pagination and very often sorting.
+* To get a single object from a list, you append the ID to the list's URI, e.g. `/my/accounts/1234`.
+* If a summary/short version of a list exists (e.g. with only the IDs), `digest` is appended to the list's URI, e.g. `/my/accounts/digest`.
+* JSON fields should be named to the point and not prefixed. A `transaction` object, for example, should have an `id` and not a `transaction_id`, a `limit` not a `transaction_limit` and such. If fields only make sense when grouped, a sub-object should be introduced. So instead of an `amount_value` and `amount_currency`, the `transaction` should have an `amount` field holding an object, that encapsulates a `value` and a `currency`.
+* JSON fields and objects only use lower case letters and `words_and_underscores`, no CamelCase or other names.
+
+As a general principle the API should not provide (localized) GUI texts. All messages are given as status/error codes or text codes.
+
+
+## API Versioning
+
+It is important to present API version of the endpoint, which is used in WebAPI in user call. If an endpoint is marked to use certain version of API then please use the given version when calling the given endpoint. If no version is used in request call, then the most current version of API is used.
+
+## Availability (GET /checkavailability)
+
+This request allows client to check if WebAPI is in maintenance window/ error mode or fully available. The request shall be called by each application as a convenience check to avoid HTTP 503 errors calling WebAPI, when it is in maintenance/error mode.
+
+To execute the request call the following URL:
+
+ENV    | URL
+------ | --------------------------------------
+PROD   | https://api.sparkasse.at/checkavailability
+FAT    | https://api.fat.sparkasse.at/checkavailability
+           
+
+### Parameters
+
+No parameters required
+
+### Reply
+
+An [AVAILABILITY] object.
++ Request
+
++ Response 200 (application/json)
+
+If available:
+
+    {
+    http_status: "200"
+    }
+
+If not available:
+
+    {
+    "http_status": "503",
+    "not_availables": [
+        {
+            "locale": "de_AT",
+            "title": "Wir bedauern...",
+            "description": "Da wir gerade dabei sind die Funktionen und Services im netbanking für Sie zu erweitern, können wir Ihnen das netbanking derzeit leider nicht zur Verfügung stellen.\n\nWir sind bemüht, Ihnen unsere Services so rasch wie möglich wieder zur Verfügung zu stellen!\n\nDanke für Ihr Verständnis"
+        },
+        {
+            "locale": "en_US",
+            "title": "We are sorry",
+            "description": "We are currently updating the netbanking functions and services; therefore netbanking is not available at the moment.\n\nOur services will be available as soon as possible.\n\nThank you for your appreciation."
+        }
+    ]
+    }
