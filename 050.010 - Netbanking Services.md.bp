@@ -1,0 +1,374 @@
+FORMAT: 1A
+HOST: https://www.csast.csas.cz/webapi/api/v1
+
+# Banking Services
+Banking Services API consist of initial set of endpoints needed for George Overview page (Release 0).
+
+# Group Profiles
+Profile-related resources of *Banking Services API*.
+
+## Profile [/netbanking/my/profile]
+Resource Profile represents basic "netbanking" configuration of user/client profile.
+
+Description of **Profile** resource/type attributes: 
+
+| Level | Attribute name          | Type/Enum | Mand/Opt | Attribute description                                                                                                                                                                 | Expected values/format |
+|-------|-------------------------|-----------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------|
+| 1     | customerId              | TEXT      | M        | Internal ID of customer                                                                                                                                                               | e.g. ABC12345                                                               |
+| 1     | firstname               | TEXT      | M        | Customer first name                                                                                                                                                                   |                                                                             |
+| 1     | lastname                | TEXT      | M        | Customer surname, last name                                                                                                                                                           |                                                                             |
+| 1     | individualGreeting      | TEXT      | O        | Individual greeting message set by customer                                                                                                                                           |                                                                             |
+| 1     | alias                   | TEXT      | O        | Alias of user name. Currently not used in George - for future it is going to be used in another apps, therefore it is stored in the BackEnd.                                          |                                                                             |
+| 1     | instituteId             | INTEGER   | O        | Institute ID (defined for each branch in AT, mandatory only for AT). George FE uses it only for showing logo if the value is provided.                                                |                                                                             |
+| 1     | lastlogin               | DATETIME  | O        | Optional date and time of the last login of customer. Common last login for all client applications - George, QC, etc.                                                                | ISO dateTime format: YYYY-MM-DDThh:mm:ssZ                                   |
+| 1     | offlineKey              | TEXT32    | O        | OfflineKey was used by QC - unused in George FE                                                                                                                                       |                                                                             |
+| 1     | supportCategory         | TEXT      | O        | Optional value defining the type of support the user gets (if the backend provided value is unknown or empty, the field will not be delivered at all). Currently unused in George FE. | Possible values: `Premium`, `Individual`, `Top`, `Classic` and `Standard`   |
+| 1     | marketingInfoAcceptance | ENUM      | M        | Flag if customer accepted providing personal data for marketing purpose (§107 telecommunication act in AT)                                                                            | ENUM: `ACCEPTED`, `NOT_ACCEPTED`, `UNKNOWN`                                 |
+| 1     | gender                  | ENUM      | M        | Customer gender                                                                                                                                                                       | ENUM: `MALE`, `FEMALE`, `UNKNOWN`                                           |
+
++ Model
+
+    + Body
+
+            {
+                "customerId": "ABC1234567890123",
+                "firstname": "Max",
+                "lastname": "Mustermann",
+                "individualGreeting": "Hi Muster",
+                "alias": "MusterSuperman",
+                "instituteId": 188,
+                "offlineKey": "a1b2c3d4567891234567891234567890",
+                "supportCategory": "Premium",
+                "marketingInfoAcceptance": "ACCEPTED",
+                "gender": "MALE",
+                "lastlogin": "2013-11-28T16:18:10Z"
+            }
+
+### Retrieve a user profile [GET]
+Get basic information about the user whom provided authorization token belongs to / represents.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Profile** type containing basic "netbanking" configuration information about the user.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Profile][]
+
+## Profile Logininfo [/netbanking/my/profile/logininfo]
+Resource **Profile Logininfo** consist of embedded **Profile** type, but attribute *lastLogin* is not DATETIME, but ARRAY of pairs *lastLogin* and *channel*.
+
+Description of **Profile Logininfo** specific attributes: 
+
+| Level | Attribute name          | Type/Enum | Mand/Opt | Attribute description                                                      | Expected values/format |
+|-------|-------------------------|-----------|----------|----------------------------------------------------------------------------|------------------------|
+| 1     | lastLogin               | ARRAY     | O        | Collection of all available last logins of customer via different channels |                        |
+| 2     | channel                 | TEXT      | M        | Channel identification for particular login                                | Possible values: `NB` - netBanking (only this value is currently used in George FE), `MB` - mobileBanking app like QuickCheck, Transactions  |
+| 2     | lastLogin               | DATETIME  | M        | Date and time of the last login of customer via particular channel         | ISO dateTime format: YYYY-MM-DDThh:mm:ssZ |
+
++ Model
+
+    + Body
+
+            {
+                "customerId": "ABC1234567890123",
+                "firstname": "Max",
+                "lastname": "Mustermann",
+                "individualGreeting": "Hi Muster",
+                "alias": "MusterSuperman",
+                "instituteId": 188,
+                "offlineKey": "a1b2c3d4567891234567891234567890",
+                "supportCategory": "Premium",
+                "marketingInfoAcceptance": "ACCEPTED",
+                "gender": "MALE",
+                "lastlogin": [
+                {
+                    "channel": "MB",
+                    "lastlogin": "2014-01-23T11:38:52Z"
+                },
+                {
+                    "channel": "NB",
+                    "lastlogin": "2014-02-18T08:37:09Z"
+                },
+                {
+                    "channel": "NB",
+                    "lastlogin": "2014-01-07T15:04:15Z"
+                }
+                ]
+            }
+
+
+### Retrieve profile info and list of user last logins [GET]
+Get basic information and list of the last logins of the user whom provided authorization token belongs to / represents.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Profile Logininfo** resource containing basic "netbanking" configuration information about the user together with "lastlogin" as array of all available lastLogin dates and the channels of the respective logins.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Profile Logininfo][]
+
+# Group Settings
+Settings-related resources of *Banking Services API*.
+
+## Settings [/netbanking/my/settings]
+Resource Settings represents serverside settings of user/client.
+
+Description of **Settings** resource/type attributes: 
+
+| Level | Attribute name         | Type/Enum     | Mand/Opt | Attribute description                                                                   | Expected values/format         |
+|-------|------------------------|---------------|----------|-----------------------------------------------------------------------------------------|--------------------------------|
+| 1     | language               | TEXT          | M        | User preffered language stored in BackEnd, default is local language                    | Values: `EN`, `DE`, `CZ`, `SK` |
+| 1     | landingAccountId       | TEXT          | M        | IBAN of landing account of user                                                         | IBAN format                    |
+| 1     | tacPhoneNumbers        | ARRAY of TEXT | O        | List of available phone numbers, where to send a TAC code                               | Phone numbers are masked       |
+| 1     | authorizationType      | ENUM          | M        | User preffered authorization type                                                       | ENUM: `TAC`, `TAN`, other local authorization type has to be defined |
+| 1     | passwordExpiresInDays  | INTEGER       | M        | Number of days to password expiration provided by BackEnd                               |                                |
+| 1     | flags                  | FLAGS         | O        | Array of optional flag values, the absence of a certain string is considered as “false” | Flags values - see table below |
+
+The following flags can be applied to field *flags* in **Settings** resource:
+
+Flag                            | Description
+------------------------------- | -----------------------------------------------
+`displayInsurances`             | Insurance contracts are displayed in online banking (George).
+`displayLeasings`               | Leasing contracts are displayed in online banking (George).
+`displayBuildings`              | Buildings society contracts are displayed in online banking (George).
+`displayCreditCards`            | Credit cards are displayed in online banking (George).
+
++ Model
+
+    + Body
+
+            {
+                "language": "EN",                     
+                "landingAccountId": "CZ5508000000000379554193",             
+                "tacPhoneNumbers": [                  
+                    "+420*****1234,
+                    ...
+                ],
+                "authorizationType": "TAC",   
+                "passwordExpiresInDays": 129,     
+                "flags": ["displayInsurances", "displayLeasings", "displayBuildings", "displayCreditCards"] 
+            }
+
+### Retrieve a user settings [GET]
+Get netbanking settings of the user whom provided authorization token belongs to / represents.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Settings** resource containing basic serverside settings of user/client.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Settings][]
+
+# Group Messages
+Message-related resources of *Banking Services API*.
+
+## Message [/netbanking/my/messages/{id}]
+Message type represents message in the George personal inbox of the user.
+
+Description of **Message** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum | Mand/Opt | Attribute description                                                                   | Expected values/format   |
+|-------|----------------|-----------|----------|-----------------------------------------------------------------------------------------|--------------------------|
+| 1     | id             | TEXT16    | M        | Internal ID of message                                                                  |                          |
+| 1     | from           | TEXT      | M        | Source system of message, who created message                                           | e.g. `netbanking`        |
+| 1     | subject        | TEXT      | M        | Subject of the message provided by source system (in particular language)               |                          |
+| 1     | date           | DATETIME  | M        | Date and time of message creation/generation                                            | ISO dateTime format:  YYYY-MM-DDThh:mm:ssZ |
+| 1     | body           | HTML      | M        | Text of the message, could be as html                                                   |                          |
+| 1     | attachments    | ARRAY of ATTACHMENT | O        | Optional array of metadata of an attachment                                             |                          |
+| 2     | id             | TEXT      | M        | Message attachment ID                                                                   | e.g. 141951229267        |
+| 2     | fileName       | TEXT      | M        | File name of Message attachment                                                         | name.extension, like "test.doc" |
+| 1     | flags          | FLAGS     | O        | Array of optional flag values, the absence of a certain string is considered as “false” | Flags values - see table below |
+
+The following flags can be applied to field *flags* in **Message** resource:
+
+Flag        | Description
+------------|-----------------------------------------------
+`mandatory` | This is a mandatory message.
+`unread`    | This message is unread by user.
+`unsigned`  | This message is unsigned yet.
+`warning`   | Type of message is warning.
+`info`      | Type of message is information.
+
++ Parameters
+    + id (string) ... ID of the user message in inbox used as URI parameter.
+
++ Model
+
+    + Body
+
+            {
+                "id": "131371121204",
+                "from": "netbanking",
+                "subject": "once again for the API",
+                "date": "2013-05-17T00:00:00+02:00",
+                "body": "please read this message, really urgent",
+                "attachments": [
+                    {
+                        "id": "141951229267",
+                        "fileName": "test.doc"
+                    },
+                    {
+                        "id": "141951230156",
+                        "fileName": "test2.doc"
+                    }
+                ],
+                "flags": [
+                    "unread"
+                ]
+            }
+
+### Retrieve single message from personal inbox [GET]
+Get the details of one specific message, read or unread.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Message** resource containing details of one message from user inbox identified by parameter ID.
+
+#### Error codes
+
+Error code     | Scope    | Purpose
+---------------|----------|------------------------------------
+`ID_NOT_FOUND` | `id`     | The provided ID does not exist.
+
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Message][]
+
+## Message List [/netbanking/my/messages?{&size,page}?(&sort,order)]
+Resource Message List represents collection of messages in the George personal inbox of the user.
+This resource consist of paging attributes and array of *embedded* **Message** type items.
+
+Description of **Message List** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum        | Mand/Opt | Attribute description                                                | Expected values/format   |
+|-------|----------------|------------------|----------|----------------------------------------------------------------------|--------------------------|
+| 1     | pageNumber     | INTEGER          | M        | Page number of returned page, starting from 0 for the first page     |                          |
+| 1     | pageCount      | INTEGER          | M        | Total number of pages of defined size                                |                          |
+| 1     | nextPage       | INTEGER          | M        | Page number of following page                                        |                          |
+| 1     | pageSize       | INTEGER          | M        | Provided or defaulted page size                                      |                          |
+| 1     | messages       | ARRAY of MESSAGE | O        | Array of messages in the personal inbox of the user (could be empty) |                          |
+
++ Parameters
+    + size (INTEGER, optional) ... Page size used as URI parameter. There is no predefined size limit. If it is omitted, all records are returned in one large list.
+    + page (INTEGER, optional) ... Requested page number used as URI parameter. Page count starts at zero, so 0 is the first page. If size is given without any page, page=0 is assumed as default.
+    + sort (TEXT, optional) ... Possible sort fields are `from`, `date` and `id`. If no sort is given, a random order has to be assumed that can change between calls.
+    + order (TEXT, optional) ... Sorting order can be either `asc` or `desc` (case insensitive), with `asc` as default. Sorting multiple fields at the same time is possible by comma-separating the sorting fields and their corresponding sort orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding order entries are considered to be asc.
+
++ Model
+
+    + Body
+
+            {
+                "pageNumber": 0,
+                "pageCount": 1,
+                "nextPage": 0,
+                "pageSize": 20,
+                "_embedded": {
+                    "messages": [
+                        {
+                            "id": "131371121204",
+                            "from": "netbanking",
+                            "subject": "once again for API testing",
+                            "date": "2013-05-17T00:00:00+02:00",
+                            "body": "please read this message, really urgent",
+                            "attachments": [
+                                {
+                                    "id": "141951229267",
+                                    "fileName": "test.doc"
+                                },
+                                {
+                                    "id": "141951230156",
+                                    "fileName": "test2.doc"
+                                }
+                            ],
+                            "flags": [
+                                "unread"
+                            ]
+                        },
+                        {
+                            "id": "131370923151",
+                            "from": "Absender",
+                            "subject": "nb MUSS Nachricht",
+                            "date": "2013-05-17T00:00:00+02:00",
+                            "body": "Inhalt",
+                            "flags": [
+                                "mandatory"
+                            ]
+                        },
+                        {
+                            "id": "131370922317",
+                            "from": "Absender",
+                            "subject": "nb KANN Nachricht",
+                            "date": "2013-05-17T00:00:00+02:00",
+                            "body": "Inhalt"
+                        }
+                    ]
+                }
+            }
+
+### Retrieve list of messages from personal inbox [GET]
+Get list of all messages, read or unread, mandatory and non-mandatory. This call is paginated and can be sorted by fields `from`, `date` and `id`. This call might return different messages based on appId of the caller (for example, some messages might be specific to an particular application). Which messages can be seen by which application should be configured on the server side.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Message List** with paging info and possibly empty array of **Message** items from user inbox.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Message List][]
