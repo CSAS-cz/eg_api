@@ -1,7 +1,9 @@
 FORMAT: 1A
 HOST: https://www.csast.csas.cz/webapi/api/v1
 
-# WebAPI Basics
+# Erste Group - George WebAPI
+
+# Group WebAPI Basics
 
 This API is a HTTP-1.1 REST service that provides access to user and accounting data of Erste Bank customers. It is a general purpose API with no single predefined use in mind. The following requirements need to be met:
 
@@ -457,3 +459,4 @@ As a general principle the API should not provide (localized) GUI texts. All mes
 ## API Versioning
 
 It is important to present API version of the endpoint, which is used in WebAPI in user call. If an endpoint is marked to use certain version of API then please use the given version when calling the given endpoint. If no version is used in request call, then the most current version of API is used.
+
