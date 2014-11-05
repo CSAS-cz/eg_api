@@ -224,25 +224,81 @@ Empty arrays `[]` should be omitted from output data.
 
 ### Error handling
 
-Errors are given as codes of `WORDS_AND_UNDERSCORES` (see also [Naming Conventions](#naming-conventions)). It is the responsibility of the FE client application to convert them into something useful and using the language of the user. Error codes are returned in the error wrapper object.
+WebAPI Error Handling concept covers following requirements:
+
+- Client side/Business requirements:
+    - multi-language support - one error must be presentable in multiple languages
+    - parametrization - error message should be parametrized (e.g. “Your payment order is over limit.
+Current limit is XX EUR, you entered YY EUR”)
+    - multiple app support - the same error code can have different messages in different apps (e.g.
+different error message in mobile/desktop apps)!
+    - multiple client segment support - the same error code can have different messages for different
+types of customers (e.g. “Hey bro, you’re asking too much” vs “Your payment order is over
+limit”)!
+
+- Backoffice/Operation needs:
+    - unique error codes - one error cause matches exactly one error code
+    - single point of maintenance for all apps - error codes and messages are manageable in one
+place, to prevent misleading interpretations across apps. Build process or distribution process
+of apps should involve usage of this point somehow
+    - understandability - support teams should easily identify error cause, both from support tools
+and from app logs
+
+- Technical requirements:
+    - We need to handle messages for HTTP status codes
+    - Frontend sometimes reacts on exact value of error code - this complicates changes and should
+be solved somehow!
+    - Cross-country - there should be common errors used for common Group API, but also locally
+specific errors!
+    - Severity - application should have some common way how to react to severity of error
+    - Unparametrized message for errors - most of BEs doesn’t support parametrization, so there
+should always be generic message without parameters for any error!
+
+Solution covering all these requirements is "Common error codetable" - One place for all errors with following attributes:
+
+Attribute             | Meaning                                             | Note
+----------------------|-----------------------------------------------------|----------
+errorCode             | Unique character error code, e.g. `LIMIT_EXCEEDED`  | Locally specific errors should have prefix, e.g. `CZ_ERRLIMIT`
+errorDescription      | Human-readable error description, not localized. Its intended audience is application support, should be used in app logs together with error code  | This description SHOULD NEVER be sent to frontend/displayed to user. It is meant only as a guide for support staff and maintainer of error codetable.
+application           | Identification of application or empty for default  | Error messages might be application specific. There should always be default message.
+language              | Language of message  | Language for particular error message - one row in Error codetable.
+message               | Message text with placeholders for parameters       | Placeholders for params will be named, so that different position can be used for the same parameter in different languages.
+parameterNames        | List (e.g. comma-separated) of parameters names that can be used in message.  | This is only information for support to indicate, which parameters can be used to tailor resulting message.
+customerSegment       | Specifies segment of customer or empty for default. Different types of customers may require different way of communication.  | There should always be default message.
+unparametrisedMessage | General message text without parameters             | Some BE cannot provide parameters for error messages. This message should be used when no params are available.
+severity              | Severity parameter, indication for frontend how it should react.  | Possible values: `INFO`, `WARNING`, `BUSINESS_ERROR`, `APP_ERROR`, `FATAL_ERROR`
+
+#### Frontend Usage of Common Error Codetable
+
+Copy of error codetable should be included in any application using this concept. This can be achieved either by build process (suitable especially for web applications), or by some service providing its contents (e.g. mobile app will have a copy included at its build and then the list can be regularly updated by calling this service).
+Frontend only receives error code and parameters names/values (returned in the error wrapper object), error message is built on fronted using error codetable and parameters values.
+
+#### WebAPI error communication
+
+Errors are given as codes of `WORDS_AND_UNDERSCORES` (see also [Naming Conventions](#naming-conventions)). It is the responsibility of the FE client application to convert them using the language of the user and data from Error Codetable.
 
 If a call fails with one of the 40x HTTP codes, the payload will contain a top-level `error` JSON array. It contains one entry per logical error that describes more in detail what happened. Errors come in two flavors, as following example output shows:
 
     "errors": [
     {
-        "error":"SOME_ERROR_CODE",
+        "error":"SOME_ERROR_CODE"           // error code
     },
     {
-        "error":"ANOTHER_ERROR_CODE",
-        "scope":"account.amount.currency"
-    }
+        "error":"ANOTHER_ERROR_CODE",       // error code
+        "scope":"account.amount.currency"   // optional attribute indicating JSON parameter name that caused the error. Provided by WebAPI logic/validation when applicable
+    },
     {
-        "error":"OTHER_ERROR_CODE",
-        "scope":"transactions[3].senderName"
+        "error":"OTHER_ERROR_CODE",             // error code
+        "AMOUNT_ENTERED": 10000,                // named parameter “AMOUNT_ENTERED” and its value
+        "CURRENCY": "EUR",                      // named parameter “CURRENCY” and its value
+        "LIMIT": 500,                           // named parameter “LIMIT” and its value
+        "scope":"orders[3].amount.value"        // scope can use array index for identification of particular field
     }
     ]
 
-Simple errors only contain an *error* key with some textual error code, for example "`SESSION_EXPIRED`". Validation errors contain in addition to the *error* key a *scope* key that refers to the input element that this error applies to. The scope is fully qualified within the JSON input using dots, array items are qualified via `[123]`.
+Simple errors only contain an *error* key with some textual error code, for example `SESSION_EXPIRED`. Validation errors contain in addition to the *error* key a *scope* key that refers to the input element that cause this error. The scope is fully qualified within the JSON input using dots, array items are qualified via `[123]`.
+
+For HTTP status codes errors (e.g. PUT resource returning 404 - Not Found), error code will be returned in “xAPI_ERROR_CODE” header attribute. All message parameters will be also returned as header attributes, prefixed by “xAPI_” (so that AMOUNT_ENTERED error attribute will be returned as “xAPI_AMOUNT_ENTERED”).
 
 The following common error codes are defined:
 
@@ -256,6 +312,10 @@ Error code              | Purpose
 `INTERNAL_SERVER_ERROR` | A technical exception occurred.
 
 If a call can produce additional errors, they are listed in each call separately.
+
+#### WebAPI error communication
+
+Different backends may have different error codes for the same error. Mapping mechanism should exist to map this codes to unified error codetable; implementation of this mechanism is beyond the scope of this document. Proposed solution in CS is to include this mechanism into WebAPI business logic and maintain mapping form BE to common error code in one place, probably in RDS. This will however be locally specific.
 
 ### Pagination
 
@@ -352,7 +412,7 @@ Security Token Service functionality provided by Federated Login  solution is de
 
 ## API URLs
 
-Prefixes in URL are used to differentiate the environment version of API. Every local country implementation should define it as following example:
+Prefixes in URL are used to differentiate the environment version of API. Every local country implementation should define it as following example from AT:
 
  ENV   | HOST
 ------ | ----------------------------------------------
@@ -374,7 +434,7 @@ For the `HOST`, see table above. The `ENDPONT` is the individual call, e.g. `/ne
 
 The following calls are handled by the API, which might or might not be deployed at the same servers as the authentication BackEnd used by the client to obtain the necessary permission/tokens.
 
- ENV   | URL
+ ENV   | URL for AT
 ------ | -------------------------------------------------------------
  ENTW  | https://mobileappsd.imcplus.net/rest/
  FAT   | https://api.fat.sparkasse.at/rest/
@@ -397,50 +457,3 @@ As a general principle the API should not provide (localized) GUI texts. All mes
 ## API Versioning
 
 It is important to present API version of the endpoint, which is used in WebAPI in user call. If an endpoint is marked to use certain version of API then please use the given version when calling the given endpoint. If no version is used in request call, then the most current version of API is used.
-
-## Availability (GET /checkavailability)
-
-This request allows client to check if WebAPI is in maintenance window/ error mode or fully available. The request shall be called by each application as a convenience check to avoid HTTP 503 errors calling WebAPI, when it is in maintenance/error mode.
-
-To execute the request call the following URL:
-
-ENV    | URL
------- | --------------------------------------
-PROD   | https://api.sparkasse.at/checkavailability
-FAT    | https://api.fat.sparkasse.at/checkavailability
-           
-
-### Parameters
-
-No parameters required
-
-### Reply
-
-An [AVAILABILITY] object.
-+ Request
-
-+ Response 200 (application/json)
-
-If available:
-
-    {
-    http_status: "200"
-    }
-
-If not available:
-
-    {
-    "http_status": "503",
-    "not_availables": [
-        {
-            "locale": "de_AT",
-            "title": "Wir bedauern...",
-            "description": "Da wir gerade dabei sind die Funktionen und Services im netbanking für Sie zu erweitern, können wir Ihnen das netbanking derzeit leider nicht zur Verfügung stellen.\n\nWir sind bemüht, Ihnen unsere Services so rasch wie möglich wieder zur Verfügung zu stellen!\n\nDanke für Ihr Verständnis"
-        },
-        {
-            "locale": "en_US",
-            "title": "We are sorry",
-            "description": "We are currently updating the netbanking functions and services; therefore netbanking is not available at the moment.\n\nOur services will be available as soon as possible.\n\nThank you for your appreciation."
-        }
-    ]
-    }
