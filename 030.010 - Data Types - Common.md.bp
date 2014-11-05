@@ -7,12 +7,10 @@ The individual call descriptions below reuse the following common data types. (T
 
 When specifying arrays, the array is shown as a single line with three dots. The type of the array is defined by listing the first entry. The use of round or square braces around that first entry defines if the array itself is optional or not. Empty arrays are omitted from the output.
 
-
-{
-    "mandatoryArray": [ (SOMETYPE), [SOMETYPE] ],
-    "optionalArray": [ [SOMETYPE], [SOMETYPE] ]   
-}
-
+    {
+        "mandatoryArray": [ (SOMETYPE), [SOMETYPE] ],
+        "optionalArray": [ [SOMETYPE], [SOMETYPE] ]   
+    }  
 
 If data types (see below) define error codes, those have to be returned whenever an object using such a field is POSTed or PUTed. In addition, the following generic errors can occur:
 
@@ -51,11 +49,9 @@ error code         | purpose
 ## Numbers (NUMBER)
 Numbers are zero-padded positive integers presented as strings. 
 
-
-{
-    "institute":"0188"         // (NUMBER4)
-}
-
+    {
+        "institute":"0188"         // (NUMBER4)
+    }
 
 ### Checks & Error Codes
 
@@ -67,9 +63,7 @@ error code         | purpose
 
 A 36-digit string containing a standard [universally unique identifier](http://en.wikipedia.org/wiki/Universally_unique_identifier).
 
-
     "uuid": "550e8400-e29b-41d4-a716-446655440000"
-
 
 ### Checks & Error Codes
 
@@ -81,11 +75,9 @@ error code     | purpose
 
 Currency is in ISO 4217 format (3 capital letters code).
 
-
-{
-    "currency":"EUR"           // (ISO4217)
-}
-
+    {
+        "currency":"EUR"           // (ISO4217)
+    }
 
 ### Checks & Error Codes
 
@@ -97,11 +89,9 @@ error code         | purpose
 
 Country codes are in ISO 3166-1 format, subtype ALPHA-2. This means two letters in uppercase. 
 
-
-{
-    "country":"AT"           // (ISO3166)
-}
-
+    {
+        "country":"AT"           // (ISO3166)
+    }
 
 ### Checks & Error Codes
 
@@ -117,13 +107,11 @@ All hashes are generated as SHA256.
 
 Amounts are objects that include the value, the precision and the currency. If the precision is omitted, the value is considered to be 2. If the currency is omitted, it is to be considered to be local currency parameter (`EUR` for AT, SK, `CZK` for CZ).
 
-
-"amount" : {
-    "value":12345678900,       // (INTEGER)
-    "precision":2,             // [INTEGER]
-    "currency":"EUR"           // (CURRENCY)
-}
-
+    "amount" : {
+        "value":12345678900,       // (INTEGER)
+        "precision":2,             // [INTEGER]
+        "currency":"EUR"           // (CURRENCY)
+    }
 
 ### Checks & Error Codes
 
@@ -138,13 +126,11 @@ Also, "currency" has to be checked according to (CURRENCY) rules.
 
 This data type is derived from (AMOUNT). It is only allowed to contain EUR as currency, either by explicitly stating that in the "currency", or by omitting the currency (which defaults to EUR). 
 
-
-"amount" : {
-    "value":12345678900,       // (INTEGER)
-    "precision":2,             // [INTEGER]
-    "currency":"EUR"           // [CURRENCY]
-}
-
+    "amount" : {
+        "value":12345678900,       // (INTEGER)
+        "precision":2,             // [INTEGER]
+        "currency":"EUR"           // [CURRENCY]
+    }
 
 ### Checks & Error Codes
 
@@ -158,22 +144,18 @@ error code         | purpose
 
 Date format without time (yyyy-MM-dd).
 
-
-{
-    "aDate":"2011-07-14"  // (DATE)
-}
-
+    {
+        "aDate":"2011-07-14"  // (DATE)
+    }
 
 ## Dates (DATETIME)
 
 Dates are returned as ISO 8601 dates and are used for both dates, times and timestamps. Using timezones is mandatory.
 
-
-{
-    "aDate":"2011-07-14T19:43:37+0100",  // (DATETIME)
-    "anotherDate":"2012-03-11+0100",     // (DATETIME) that does not have a time
-}
-
+    {
+        "aDate":"2011-07-14T19:43:37+0100",  // (DATETIME)
+        "anotherDate":"2012-03-11+0100",     // (DATETIME) that does not have a time
+    }
 
 All dates returned by the API are in the corresponding time zone a record/data object is for. For Austrian dates (e.g. transfer timestamps) this means Central European Standard Time (CEST). Austria is UTC+1 in winter and UTC+2 in summer, so times usually read `+0100` or `+0200`. Should, at a later time, the API be applied to other countries, the corresponding time zone for a given data object has to be used. 
 
@@ -193,9 +175,7 @@ error code         | purpose
 
 Variables where the actual value is one of a predefined list (a.k.a. enums). The range of values are given as comma-separated list right in the datatype definition, e.g. (ENUM:GI,WP,SP,KA). Domain values are keys used in sIT's internal Domain Database, that provides company-wide reusable keys, short- and longtexts for them.
 
-
     "some_domain_value":"SP"     // (ENUM:GI,WP,SP,KA)
-
 
 ### Checks & Error Codes
 
@@ -207,11 +187,9 @@ error code      | purpose
 
 Flags/Tags/Roles that an object can have. To avoid adding a lot of case-specific boolean values, things that an object is nor not is are represented by flagging the object. Flags are an array of strings representing one aspect, e.g. one permission, one attribute or one role. The existence of a certain string in a Flag-List can be considered to be a "true" on this aspect, the absence of a certain string as a "false". The possible flags are listed on a case-by-case basis at each data type/call as comma-separated list within the brackets. 
 
-
-"flags": [
-    "hidden", "transactionsHidden"   // (FLAGS:hidden,transactionsHidden,unused1,unused2)
-]
-
+    "flags": [
+        "hidden", "transactionsHidden"   // (FLAGS:hidden,transactionsHidden,unused1,unused2)
+    ]
 
 Empty flag arrays can be omitted.
 
@@ -225,9 +203,7 @@ error code      | purpose
 
 Based on ISO 13616-1:2007. A valid IBAN consists of all three of the following components: Country Code (2 capital letters), check digits (2 digits) and BBAN (local Basic Bank Account Number consisting of 1-30 characters). 
 
-
-"iban": "AT896000000005544815"
-
+    "iban": "AT896000000005544815"
 
 ### Checks & Error Codes
 
@@ -242,11 +218,11 @@ BIC code (also know as SWIFT ID/code) standard format (based on ISO 9362) has 8 
 - 4 letters: Institution Code or bank code
 - 2 letters: ISO 3166-1 alpha-2 country code
 - 2 letters or digits: location code
-- 3 letters or digits: branch code, optional (posiblle default 'XXX' for primary office)
+- 3 letters or digits: branch code, optional (possible default 'XXX' for primary office)
 
+Example:
 
-"bic": "OPSKATWW"
-
+    "bic": "OPSKATWW"
 
 ### Checks & Error Codes
 
@@ -256,80 +232,68 @@ error code      | purpose
 
 ## Bank Code (BANKCODE)
 
-Local bank code used in local bank clearing system, e.g. 5-digit bank code in AT, 4-digit bank code in CZ.
+Local bank code used in local bank clearing system, e.g. 5-digit bank code in AT, 4-digit bank code in CZ, SK.
 
-
-"bankCode": "20111"
+    "bankCode": "20111"
 
 
 ## Account number (ACCOUNTNO)
 
 Account number consists of IBAN (IBAN plus optional BIC) identification or local account number (BBAN) plus mandatory bank code plus optional country code. This is due to fact, that using of IBAN format was not adopted in all the Erste group countries. Some applications of ACCOUNTNO are restricted to one of the two flavors only. F.i. when posting new SEPA payment orders sender and receiver accounts must be specified by IBAN format only, or when posting new Domestic payment in CSAS BBAN format should be used.  However when requesting existing transactions the receiver account may be returned in format BBAN or IBAN (for SEPA payments). Therefore the ACCOUNTNO object may in some cases only contain IBAN, only local BBAN, or both.
 
+    "accountNo" : {
+        "iban":"AT896000000005544815",    // [IBAN] IBAN or BBAN must be provided
+        "bic":"OPSKATWW",                  // [BIC] optional
+        "number": "23421",                // [TEXT] BBAN (or free account format for SWIFT when IBAN is not used) or IBAN must be provided
+        "bankCode": "20111",              // [BANKCODE] mandatory when BBAN is used
+        "countryCode": "AT"               // [TEXT2] mandatory for international orders
+    }
 
-"accountNo" : {
-    "iban":"AT896000000005544815",    // [IBAN] IBAN or BBAN must be provided
-    "bic":"OPSKATWW",                  // [BIC] optional
-    "number": "23421",                // [TEXT] BBAN (or free account format for SWIFT when IBAN is not used) or IBAN must be provided
-    "bankCode": "20111",              // [BANKCODE] mandatory when BBAN is used
-    "countryCode": "AT"               // [TEXT2] mandatory for international orders
-}
-
-Classic account numbers and bank codes are not padded with zeros.
+Account attribute *number* and *bankCode* are not padded with zeros.
+Account attribute *number* in CZ consists of optional account prefix (TEXT6) and account number (TEXT10) and format is "XXXXXX-NNNNNNNNNN" if prefix is not null or "000000". If prefix is not provided then format is "NNNNNNNNNN" without leading zeros. 
 
 ## Base64File (BASE64FILE)
 
 Represents a binary file with the (base64) encoded content and content type.
 
-
-{
-    "contentBase64": (XS:base64Binary), // Encoded file content (base64Binary is defined in XML Schema)
-    "contentType": (TEXT)              // MIME type, e.g., "image/png", "image/gif"
-}
-
+    {
+        "contentBase64": (XS:base64Binary), // Encoded file content (base64Binary is defined in XML Schema)
+        "contentType": (TEXT)              // MIME type, e.g., "image/png", "image/gif"
+    }
 
 ## SignInfo (SIGNINFO)
 
 Represents signing information for the requested order.
 
-
-{
-    "state": (ENUM:OPEN,NONE), // OPEN: Order should be signed. NONE: Order has been executed without signing.
-    "signId": (STAMP24ID)      // Available when state is OPEN. Used for next signing calls.
-}
-
+    {
+        "state": (ENUM:OPEN,NONE), // OPEN: Order should be signed. NONE: Order has been executed without signing.
+        "signId": (STAMP24ID)      // Available when state is OPEN. Used for next signing calls.
+    }
 
 ## Id (ID)
 
 Holds an id from a created entity.
 
-
-{
-    id: (STAMPID)
-}
-
+    {
+        id: (STAMPID)
+    }
 
 ## Database Stamp Id (STAMPID)
 
 Represents a (TEXT36) id
 
-eg:  db1fa43e-07f6-8240-8330-ed20c8307240
+    eg:  db1fa43e-07f6-8240-8330-ed20c8307240
 
 ## DVR (DVR)
 
 7-digit integer.
 
-
-"dvr": "4711815"
-
+    "dvr": "4711815"
 
 ## Email (EMAIL)
 
 Represents an email.
 
-
-{
-    "email": "john.doe@test.com"  // (EMAIL)
-}
-
-
+    {
+        "email": "john.doe@test.com"  // (EMAIL)
+    }
