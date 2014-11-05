@@ -1,0 +1,2326 @@
+FORMAT: 1A
+HOST: https://www.csast.csas.cz/webapi/api/v1
+
+# Erste Group - George WebAPI
+
+# Group WebAPI Basics
+
+This API is a HTTP-1.1 REST service that provides access to user and accounting data of Erste Bank customers. It is a general purpose API with no single predefined use in mind. The following requirements need to be met:
+
+* highly secure, as sensitive userdata is provided
+* fine granular access/permissions (e.g. allow read-only on certain business objects, or different permissions for different clients on the same account, ...)
+* low protocol overhead, as it is may be used on smart phones with potentially low bandwidth or high base latency
+* low payload overhead (e.g. JSON instead of XML)
+* no special-purpose calls for a business case, but atomic, reusable calls
+
+## Server calls
+
+Server calls are done via *https* by using one of the following HTTP methods:
+
+Method  | Idempotent  | Change state  | Purpose
+------- | ----------- | ------------- | ------------------------------------------------------------------
+GET     | yes         | no            | select: read-only call (e.g. get account list)
+POST    | no          | yes           | create: add a new resource (e.g. create a new transaction), call a function
+PUT     | yes         | yes           | update: change an existing resource (e.g. set a message read, lock a card)
+DELETE  | yes         | yes           | delete: remove an existing resource (e.g. delete a message)
+
+Resources are all URIs that deliver business data (e.g. accounts, transactions, messages, ...) while functions are calls that may or may not return data but do not operate on business data (e.g. login).
+
+All data provided by the client has to be in UTF-8 encoding. 
+
+GET, PUT und DELETE calls are idempotent. It does not matter for the server state if this call is used only once or multiple times (with the same resource/payload). POST calls, usually creating new stuff, should not be repeated by clients, because they will result in duplicated data.
+
+Successfull DELETE calls result in a "HTTP 204 - No content" reply and the resource being removed.
+
+The server must support gzip'ed content and all clients are strongly recommendet to request gzip'ed content via the HTTP header:
+
+    Accept-Encoding: gzip
+
+
+### Authentication and Authorization
+
+This API is not responsible for authentication (i.e. validate if a user/client/principal is who he/she/it claims to be, e.g. by checking user&passwords) but only of authorization (i.e. validate if a user/client/principal can access a resource here and now). Therefore, it is based on a token security concept and only needs to check the validity of such tokens which a client provides for each call as proof it may access the requested data. 
+
+As far as this API is concerned, this token is a "black box" which is part of each client request. The API provides the received token to a server-side verification library or service, and if the token turns out to be valid *for the specific requested call*, the business logic is executed. The API does not have to parse the token itself.
+
+This API can work with any type of token, as long as the following assumptions are valid:
+
+* The token already is in a format/encoding allowed to be passed as HTTP 'Authorization' header field.
+* The token is maximum 1024 bytes in length (as it has to be transferred with each request, and on mobile phones every ms counts). However, average tokens should be much shorter (e.g. 256 bytes) to reduce upload traffic for each and every request.
+* It is possible (for a library) to verify the validity of the token.
+* It is possible (for a library) to derive the user (Verfueger) from the token.
+* It is possible (for a library) to derive the **fine granular permissions** from the token. This includes a separate read and write permission down to an individual **business object level** (e.g. one specific account, message or template). However, a token should alternatively refer permissions in larger units, especially on entities the User owns, e.g. "all my accounts".
+
+**Note:** OAuth 2.0 bearer token will be used, which encapsulate SAML permissions. This match the above requirements.
+
+The token in request is sent by the client as HTTP `Authorization:` header:
+
+    Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
+The content of the token and how to generate/validate it is not part of this specification.
+
+#### Authentication in file downloads in old browsers
+
+In order to overcome the limitations in old browsers, some file download endpoints supports file downloads as a result of form post calls. These calls return the required file immediately. Authorization information is carried in the hidden field of the form post call. 
+
+    <form action="/api/netbanking/my/cards/id/invoices/2014_02/pdf" method="post"  accept="application/pdf">
+       <input type="hidden" name="access_token" value="<token>">
+       <input type="submit" value="download" />
+    </form>
+
+
+
+#### Authentication in file uploads in old browsers
+
+For limitations similar in [File downloads in old browsers](#authentication-in-file-downloads-in-old-browsers), some upload endpoints support passing the authorization token in a hidden form field in multipart form posts.
+
+
+    <form action="/api/backoffice/donation/ngos/<id>/qlogo" method="post" enctype="multipart/form-data" accept="application/json">
+       <input type="hidden" name="access_token" value="<token>">
+       <input type="file" name="file">
+       <input type="submit" value="upload" />
+    </form>
+
+
+### Session Cookies
+
+In theory, each server call could be stateless and only use the token to reconstruct state. However, this will probably result in a performance impact, can be a cost issue due increased backend/host requests, and also would render current load balancing infrastructure useless.
+
+Therefore, each time an server call is done that does not provide a standard Java Session Cookie (`JSESSIONID`), the reply will contain a new such session cookie. It is in the interest of the client to re-provide this cookie with each follow up call to make use of server-side caching. If the cookie is not re-sent, the call still will work but a slower reply will be the result.
+
+    Set-Cookie: JSESSIONID=Zw4LQndKc2ffHXM7r9NY9r2nBVbJytpnh3lt6p2R9cTQLFNz5CG5!-2028444187;
+
+
+The server will store the last-provided authentication token in the server-side session upon the first call. If the token and the session ID still match on a successive call, than it is not necessary for the server to re-validate the token as long as it is not expired. If however the token does not match to the session ID, which means the client is suddenly providing a new token, the session is immediately destroyed and a new one is created based on the new provided token. The resulting new `JSESSIONID` is sent to the client for re-use in successive calls.
+
+Session Cookies are valid for 2 minutes or the validity of the authentication token, whichever is *shorter*.
+
+### Content types and languages
+
+The client has to specify what type of content it expects via ordinary HTTP headers:
+
+    GET /path/to/some/resource HTTP/1.1
+    Host: www.example.org
+    User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:16.0) Gecko/20100101 Firefox/16.0
+    Accept: application/json
+    Accept-Language: en-US
+
+
+**Accept**: What type of content should be returned. Currently, only `application/json` is supported. This is also the default if no `Accept:` header is given.
+
+**Accept-Language**: In case language-dependent content is in the reply (GUI texts, pre-formatted amounts or dates, ...), the language-dependent infos of this language should be used by the server to translate/pre-format. If no `Accept-Language:` is given, `en-US` is assumed. The server may ignore this field in case the user has a server-side language setting which overrules any request setting.
+
+### Server side pagination
+
+All calls that return lists support pagination. The client can request the content in pages, providing a `size` and a `page` number. Those are given as URL parameters like the following example:
+
+    GET /path/to/some/resource?size=25&page=1
+
+
+`page` count starts at zero, so 0 is the first page, 1 the second and so on. If `size` is given without any `page`, `page`=0 is assumed. 
+
+There is no predefined `size` limit. If it is omitted, all records are returned in one large list. However, some calls might introduce a size limit due the fact that a certain backend would be overloaded by returning too many items in one call - in such a case, the individual call descriptions will state that clearly.
+
+### Server side sorting
+
+Some calls allow their output to be pre-sorted. This can be requested by giving the `sort` and `order` URI parameters, for example:
+
+    GET /path/to/some/resource?sort=date&order=desc
+
+Each call description below states if and what fields it supports to sort. The optional `order` can be either `asc` or `desc` (case insensitive), with `asc` as default. If no `sort` is given, a random order has to be assumed that can change between calls.
+
+Sorting multiple fields at the same time is possible by comma-separating the fields and their corresponding `sort` orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding `order` entries are considered to be `asc`. For example:
+
+    GET /path/to/some/resource?sort=date,title,name&order=desc,,desc
+
+For paginated output, sorting is done before pagination, so the whole list not only one single page is sorted. Resources/Lists requested without giving any sorting parameters should be considered to be in random order.
+ 
+### Alternate header names
+
+In some cases it might not be possible for an application to change certain HTTP headers. For example, a website calling this API via JavaScript from within an older browser might not be able to override the `Accept:` or `Accept-Language:` header. In such a case corresponding alternate header names prefixed with `X-ebsapi-` can be used. If the server receives such headers, they take precedence over any non-prefixed header that might also be included in the call.
+
+    X-ebsapi-Accept: application/json
+    X-ebsapi-Accept-Language: en-US
+    X-ebsapi-Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+ 
+Note: This is not a complete list. All HTTP headers mentioned in this document can be prefixed. 
+
+### Last modified
+
+Some calls support the HTTP last modified mechanism (this is stated in those calls that do). For such calls, the client may provide a standard RFC-complaint HTTP `If-Modified-Since` header, and resources delivered by that calls include a `Last-Modified` header. 
+
+    GET /path/to/some/resource HTTP/1.1
+    Host: www.example.org
+    User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:16.0) Gecko/20100101 Firefox/16.0
+    If-Modified-Since: Wed, 19 Oct 2005 10:50:00 GMT
+
+If the resource was not modified since the given timestamp, a HTTP `304` is returned (means "not modified"). If the resource was updated on this time or thereafter, the resource is returned. Note: this does not do delta handling. If `If-Modified-Since` is used on a list, all or none items are returned, not only the part of the list that is newer.
+
+Since HTTP's `If-Modified-Since` only supports seconds, but data on the server might be more precise, the following mechanism is in place: If a resource has a last modified date of a fraction of a second, and a client requests this resource within the very same second, the server returns the resource as `Last-Modified` with the second *rounded down*. E.g. for a resource that has a timestamp of 12:30:00.123, 12:30:00 is returned. If the request is done at a later point in time, the `Last-Modified` second is to be *rounded up*. This is done to avoid that the client might miss an update due the higher precision of time on the server than in the HTTP headers,  at the cost that in the - rare - event, that if a resource is queried at the very same second it was changed, it might be queried twice due the rounded down timestamp.
+
+As an alternative to `If-Modified-Since`, the API also supports a `X-ebsapi-Last-Modified`/`X-ebsapi-If-Modified-Since` header pair. Those accept an XML datetime format (`yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`) with millisecond precision.
+
+    GET /path/to/some/resource HTTP/1.1
+    Host: www.example.org
+    User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:16.0) Gecko/20100101 Firefox/16.0
+    X-ebsapi-If-Modified-Since: 2013-06-05T16:42:22.709Z
+
+ 
+### Batch Calls (todo)
+
+Sometimes a client wants to combine individual calls to one bigger call, so the amount of calls and the HTTP overhead is lower (e.g. netbanking app after login needs accounts, templates and messages).
+
+There is no dedicated batch call mechanism. Clients are asked to use [HTTP 1.1 Pipelining](http://en.wikipedia.org/wiki/HTTP_pipelining) for that, and the server is supposed to support that.
+
+## Server request
+
+### JSON
+
+In case of POST / PUT / DELETE requests business data is accepted as JSON data (if it is not binary data). See [Wikipedia](http://en.wikipedia.org/wiki/JSON) for details on JSON.
+
+Empty arrays `[]` and `null` values must be omitted from input data.
+
+### Error handling
+
+JSR-303 validation is applied to the provided JSON input data according to the appropriate data model.
+
+## Server reply
+
+All payload data returned by the server is in UTF-8 encoding.
+
+If *no error* occurred, the server replies with a HTTP 200 status code and the payload contains the JSON with all relevant data, or a HTTP 204 status code and no body/payload if the call does not produce data. For *logical errors* like empty fields, field parsing errors, missing mandatory fields etc. the server replies with HTTP 400 and a JSON error object (see section below). For *framework and meta-errors* (authentication failed, wrong URL, ...) the corresponding HTTP Error codes are used and the payload contains a JSON error object.
+If a resource can't be found due to inactive products in BackEnd or wrong id ( e.g. GET /netbanking/my/contracts/buildings/{id} ) the server replies with HTTP 404 and a JSON error object describing the reason (e.g. ID_NOT_FOUND or PRODUCT_NOT_ACTIVATED) has to be returned.
+
+Code  | Purpose
+----- | ---------------------------------------------------------------------------
+200   | indicates no technical error happened
+204   | like 200, but no body/payload will be sent back
+400*  | logical error in parsing request (e.g. ID does not exist, mandatory field missing, ...)
+403*  | user not logged in, invalid token, etc.
+404*  | this kind of resource does not exist
+415   | unsupported media type (Accept/Accept-Language unsupported)
+500   | internal error happened (a Java exception happened)
+
+**Legend:** * = returns JSON error object
+
+### JSON
+
+Business data is returned as JSON data (if it is not binary data like images). See [Wikipedia](http://en.wikipedia.org/wiki/JSON) for details on JSON.
+
+JSON data has no root object and it should look like
+
+    {
+    ... do this ...
+    }
+
+but not like this
+
+    "objectname" : {
+    ... don't do this ...
+    }
+
+
+Undefined or unused optional fields are omitted in the JSON output and must not be delivered as `null` nor as empty strings. If the distinction between empty and not available is necessary, of course an empty string is still a valid response. 
+
+Empty arrays `[]` should be omitted from output data. 
+
+### Error handling
+
+WebAPI Error Handling concept covers following requirements:
+
+- Client side/Business requirements:
+    - multi-language support - one error must be presentable in multiple languages
+    - parametrization - error message should be parametrized (e.g. “Your payment order is over limit.
+Current limit is XX EUR, you entered YY EUR”)
+    - multiple app support - the same error code can have different messages in different apps (e.g.
+different error message in mobile/desktop apps)!
+    - multiple client segment support - the same error code can have different messages for different
+types of customers (e.g. “Hey bro, you’re asking too much” vs “Your payment order is over
+limit”)!
+
+- Backoffice/Operation needs:
+    - unique error codes - one error cause matches exactly one error code
+    - single point of maintenance for all apps - error codes and messages are manageable in one
+place, to prevent misleading interpretations across apps. Build process or distribution process
+of apps should involve usage of this point somehow
+    - understandability - support teams should easily identify error cause, both from support tools
+and from app logs
+
+- Technical requirements:
+    - We need to handle messages for HTTP status codes
+    - Frontend sometimes reacts on exact value of error code - this complicates changes and should
+be solved somehow!
+    - Cross-country - there should be common errors used for common Group API, but also locally
+specific errors!
+    - Severity - application should have some common way how to react to severity of error
+    - Unparametrized message for errors - most of BEs doesn’t support parametrization, so there
+should always be generic message without parameters for any error!
+
+Solution covering all these requirements is "Common error codetable" - One place for all errors with following attributes:
+
+Attribute             | Meaning                                             | Note
+----------------------|-----------------------------------------------------|----------
+errorCode             | Unique character error code, e.g. `LIMIT_EXCEEDED`  | Locally specific errors should have prefix, e.g. `CZ_ERRLIMIT`
+errorDescription      | Human-readable error description, not localized. Its intended audience is application support, should be used in app logs together with error code  | This description SHOULD NEVER be sent to frontend/displayed to user. It is meant only as a guide for support staff and maintainer of error codetable.
+application           | Identification of application or empty for default  | Error messages might be application specific. There should always be default message.
+language              | Language of message  | Language for particular error message - one row in Error codetable.
+message               | Message text with placeholders for parameters       | Placeholders for params will be named, so that different position can be used for the same parameter in different languages.
+parameterNames        | List (e.g. comma-separated) of parameters names that can be used in message.  | This is only information for support to indicate, which parameters can be used to tailor resulting message.
+customerSegment       | Specifies segment of customer or empty for default. Different types of customers may require different way of communication.  | There should always be default message.
+unparametrisedMessage | General message text without parameters             | Some BE cannot provide parameters for error messages. This message should be used when no params are available.
+severity              | Severity parameter, indication for frontend how it should react.  | Possible values: `INFO`, `WARNING`, `BUSINESS_ERROR`, `APP_ERROR`, `FATAL_ERROR`
+
+#### Frontend Usage of Common Error Codetable
+
+Copy of error codetable should be included in any application using this concept. This can be achieved either by build process (suitable especially for web applications), or by some service providing its contents (e.g. mobile app will have a copy included at its build and then the list can be regularly updated by calling this service).
+Frontend only receives error code and parameters names/values (returned in the error wrapper object), error message is built on fronted using error codetable and parameters values.
+
+#### WebAPI error communication
+
+Errors are given as codes of `WORDS_AND_UNDERSCORES` (see also [Naming Conventions](#naming-conventions)). It is the responsibility of the FE client application to convert them using the language of the user and data from Error Codetable.
+
+If a call fails with one of the 40x HTTP codes, the payload will contain a top-level `error` JSON array. It contains one entry per logical error that describes more in detail what happened. Errors come in two flavors, as following example output shows:
+
+    "errors": [
+    {
+        "error":"SOME_ERROR_CODE"           // error code
+    },
+    {
+        "error":"ANOTHER_ERROR_CODE",       // error code
+        "scope":"account.amount.currency"   // optional attribute indicating JSON parameter name that caused the error. Provided by WebAPI logic/validation when applicable
+    },
+    {
+        "error":"OTHER_ERROR_CODE",             // error code
+        "AMOUNT_ENTERED": 10000,                // named parameter “AMOUNT_ENTERED” and its value
+        "CURRENCY": "EUR",                      // named parameter “CURRENCY” and its value
+        "LIMIT": 500,                           // named parameter “LIMIT” and its value
+        "scope":"orders[3].amount.value"        // scope can use array index for identification of particular field
+    }
+    ]
+
+Simple errors only contain an *error* key with some textual error code, for example `SESSION_EXPIRED`. Validation errors contain in addition to the *error* key a *scope* key that refers to the input element that cause this error. The scope is fully qualified within the JSON input using dots, array items are qualified via `[123]`.
+
+For HTTP status codes errors (e.g. PUT resource returning 404 - Not Found), error code will be returned in “xAPI_ERROR_CODE” header attribute. All message parameters will be also returned as header attributes, prefixed by “xAPI_” (so that AMOUNT_ENTERED error attribute will be returned as “xAPI_AMOUNT_ENTERED”).
+
+The following common error codes are defined:
+
+Error code              | Purpose
+----------------------- | --------------------------------------
+`TOKEN_NOT_ALLOWED`     | The provided token does not allow this call.
+`TOKEN_EXPIRED`         | The provided token is expired.
+`TOKEN_INVALID`         | The provided token not a valid token (syntax error).
+`FIELD_NOSORT`          | The field (given in the "scope" field of the error) can not be used for sorting (does not exist, does not support sorting).
+`RESOURCE_NOSORT`       | Resource does not support sorting.
+`INTERNAL_SERVER_ERROR` | A technical exception occurred.
+
+If a call can produce additional errors, they are listed in each call separately.
+
+#### WebAPI error communication
+
+Different backends may have different error codes for the same error. Mapping mechanism should exist to map this codes to unified error codetable; implementation of this mechanism is beyond the scope of this document. Proposed solution in CS is to include this mechanism into WebAPI business logic and maintain mapping form BE to common error code in one place, probably in RDS. This will however be locally specific.
+
+### Pagination
+
+If a request requires paginated output (see [Server calls/Server side Pagination](#server-side-pagination) above), the reply will contain in addition to the array with a page's items the following fields:
+
+    {
+    "lastModified": (DATETIME),
+    "pageNumber": (INTEGER),
+    "pageCount": (INTEGER),
+    "pageSize": (INTEGER),
+    "page": [
+        { ...item...},
+        { ...item...},
+        { ...item...}
+    ]
+    }
+
+
+**last_modified**: The latest update to any one items in the list. Comparing this date to the last received such date can help the client to detect if the whole list was changed in the meantime.
+
+**page_number**: The page number of provided list items.
+
+**page_count**: The total count of pages as result of calculation using the requested page size.
+
+**page_size**: The page size used. Either the number supplied by the client in request is returned here, or in case there is a page size limit for call and its value is less than the requested one, the actual size is returned.
+
+**page**: The page's items. Note that `page` can be any name, e.g. `accounts`.
+
+## Naming Conventions
+
+### JSON Fields
+
+* Field names are in English.
+* Field names are written camelCase.
+* The first letter is always lowercase. 
+* Arrays have plural names and end with `s` or `es`. 
+* Abbreviations are always written with first letter uppercase (IBAN -> Iban).
+* The main ID of an object is called just `id`.
+* All other referred ids are given via the name of the referred object plus `Id'.
+* Field names do not have a prefix of the object type, so it's not `accountName` but just `name`.
+
+Examples:
+
+    {
+    "id": 1,
+    "anotherId": 5,
+    "remoteIds": [ 7, 8, 9 ],
+    "flyingWalruses": [ "walrus 1", "walrus 2" ],
+    "iban": "some IBAN",
+    "someOtherIban": "other IBAN",
+    "flags": [ ... array ... ]
+    }
+
+
+### Error codes
+
+* Error codes are English.
+* Error codes are given all uppercase.
+* Underscores separate multi-word codes. 
+* Error codes are self-explanatory descriptions, not internal codes or strings without obvious meaning. 
+* Error codes follow a NOUN or NOUN_ADJECTIVE pattern.
+* Error codes are *not* UI-Texts and need a mapping first.
+* Error codes may get long if that helps to increase clarity.
+
+Examples:
+
+    ID_NOT_FOUND
+    SYNTAX_ERROR
+    DAILY_LIMIT_EXCEEDED
+    WALRUS_FLEW_AWAY
+    CLARITY_INCREASED_BY_VERY_LONG_ERROR_CODES
+
+### Flags
+
+Entries for the (FLAG) datatype (definition below) follow the same conventions as JSON-Fields. In addition the following rules apply:
+
+* Flags follow a "noun" or "nounAdjective" pattern.
+
+Examples:
+
+    defaultAccount
+    domesticPaymentAllowed
+
+
+## STS / Federated Login
+
+Security Token Service functionality provided by Federated Login  solution is described in FL documentation.
+
+ ENV   | URL                                            | Testuser
+------ | ---------------------------------------------- | --------------
+ ENTW  | https://logind.imcplus.net/sts/clients         | 101467721 / BHKWXESwDV
+ FAT   | https://login.fat.sparkasse.at/sts/clients     | 304844216 / testen123
+ PROD  | tbd                                            | 
+
+## API URLs
+
+Prefixes in URL are used to differentiate the environment version of API. Every local country implementation should define it as following example from AT:
+
+ ENV   | HOST
+------ | ----------------------------------------------
+ ENTW  | tbd
+ FAT   | https://api.fat.sparkasse.at/rest/
+ UAT   | https://api.uat.sparkasse.at/rest/
+ PROD  | tbd
+
+### Postman URLs
+
+All API endpoints below can be called via:
+
+    {HOST}/rest-web/api/{ENDPOINT}?access_token={TOKEN}
+
+
+For the `HOST`, see table above. The `ENDPONT` is the individual call, e.g. `/netbanking/my/accounts`. The `TOKEN` is the access token obtained from the Federated Login STS service.
+
+## API Calls
+
+The following calls are handled by the API, which might or might not be deployed at the same servers as the authentication BackEnd used by the client to obtain the necessary permission/tokens.
+
+ ENV   | URL for AT
+------ | -------------------------------------------------------------
+ ENTW  | https://mobileappsd.imcplus.net/rest/
+ FAT   | https://api.fat.sparkasse.at/rest/
+ PROD  | https://api.sparkasse.at/rest/
+
+All Client-based calls require a token issued by the authentication system to be present in the HTTP headers (see [Authentication & Security](#authentication-and-authorization) above). Only anonymous API calls (like press releases or exchange-rates) may be used without a token.
+
+Design guidelines for this API calls are following:
+
+* URI-Path starting with `/my/...` refer to the owner of the authorization token.
+* URI elements with plural nouns refer to lists of objects, e.g. `/my/accounts`. They support pagination and very often sorting.
+* To get a single object from a list, you append the ID to the list's URI, e.g. `/my/accounts/1234`.
+* If a summary/short version of a list exists (e.g. with only the IDs), `digest` is appended to the list's URI, e.g. `/my/accounts/digest`.
+* JSON fields should be named to the point and not prefixed. A `transaction` object, for example, should have an `id` and not a `transaction_id`, a `limit` not a `transaction_limit` and such. If fields only make sense when grouped, a sub-object should be introduced. So instead of an `amount_value` and `amount_currency`, the `transaction` should have an `amount` field holding an object, that encapsulates a `value` and a `currency`.
+* JSON fields and objects only use lower case letters and `words_and_underscores`, no CamelCase or other names.
+
+As a general principle the API should not provide (localized) GUI texts. All messages are given as status/error codes or text codes.
+
+
+## API Versioning
+
+It is important to present API version of the endpoint, which is used in WebAPI in user call. If an endpoint is marked to use certain version of API then please use the given version when calling the given endpoint. If no version is used in request call, then the most current version of API is used.
+
+
+# Group Data Types
+
+The individual call descriptions below reuse the following common data types. (The uppercase word in parentheses will be used in the individual call descriptions.) A field specifying a datatype in round brackets is mandatory, e.g. "(TEXT)", a field in square brackets is optional, e.g. "[TEXT]". If a datatype has a maximum length, the length is appended to the datatype, e.g. (TEXT100). If a field has a minimum and a maximum, both values are given and separated via a minus, e.g. (TEXT6-32).
+
+When specifying arrays, the array is shown as a single line with three dots. The type of the array is defined by listing the first entry. The use of round or square braces around that first entry defines if the array itself is optional or not. Empty arrays are omitted from the output.
+
+    {
+        "mandatoryArray": [ (SOMETYPE), [SOMETYPE] ],
+        "optionalArray": [ [SOMETYPE], [SOMETYPE] ]   
+    }  
+
+If data types (see below) define error codes, those have to be returned whenever an object using such a field is POSTed or PUTed. In addition, the following generic errors can occur:
+
+error code        | purpose
+----------------- | ----------------------------
+`FIELD_MISSING`   | The field is missing in the JSON input.
+`FIELD_TOO_LONG`  | The field maximum length is exceeded.
+`FIELD_TOO_SHORT` | The field minimum length is not given. 
+
+If one check fails, a HTTP 403 plus an error object is returned, with the `scope` defining the source/field of the error.
+
+## Text (TEXT)
+
+Text is given in UTF-8 encoding. 
+
+### Checks & Error Codes
+
+error code         | purpose
+------------------ | ----------------------------
+`TEXT_INVALID`     | Not a string.
+
+## HTML-Fragment (HTML)
+
+Text with HTML tags for formatting.
+
+## Integers (INTEGER)
+
+Integers are variable-length numbers (positive or negative). They do not have an upper size limit (like 32 or 64 bit).
+
+### Checks & Error Codes
+
+error code         | purpose
+------------------ | ----------------------------
+`INTEGER_INVALID`  | Not an integer (float, ...).
+
+## Numbers (NUMBER)
+Numbers are zero-padded positive integers presented as strings. 
+
+    {
+        "institute":"0188"         // (NUMBER4)
+    }
+
+### Checks & Error Codes
+
+error code         | purpose
+------------------ | -----------------------------------------------------------------
+`NUMBER_INVALID`   | Not a string only consisting of digits. Not the correct length.
+
+## Universally unique identifier (UUID)
+
+A 36-digit string containing a standard [universally unique identifier](http://en.wikipedia.org/wiki/Universally_unique_identifier).
+
+    "uuid": "550e8400-e29b-41d4-a716-446655440000"
+
+### Checks & Error Codes
+
+error code     | purpose
+-------------- | ----------------------------
+`UUID_INVALID` | Not a correct uuid string.
+
+## Currency (ISO4217)
+
+Currency is in ISO 4217 format (3 capital letters code).
+
+    {
+        "currency":"EUR"           // (ISO4217)
+    }
+
+### Checks & Error Codes
+
+error code         | purpose
+------------------ | ----------------------------
+`CURRENCY_UNKNOWN` | Not an ISO 4217 currency.
+
+## Country Codes (ISO3166)
+
+Country codes are in ISO 3166-1 format, subtype ALPHA-2. This means two letters in uppercase. 
+
+    {
+        "country":"AT"           // (ISO3166)
+    }
+
+### Checks & Error Codes
+
+error code             | purpose
+---------------------- | ----------------------------
+`COUNTRY_CODE_UNKNOWN` | Not an ISO 3166 country code.
+
+## Hashes (HASH)
+
+All hashes are generated as SHA256.
+
+## Amounts (AMOUNT)
+
+Amounts are objects that include the value, the precision and the currency. If the precision is omitted, the value is considered to be 2. If the currency is omitted, it is to be considered to be local currency parameter (`EUR` for AT, SK, `CZK` for CZ).
+
+    "amount" : {
+        "value":12345678900,       // (INTEGER)
+        "precision":2,             // [INTEGER]
+        "currency":"EUR"           // (CURRENCY)
+    }
+
+### Checks & Error Codes
+
+error code          | purpose
+------------------- | ---------------------------------------------
+`INVALID_PRECISION` | Precision not an integer or not >= 0.
+`VALUE_INVALID`     | Value is not an integer.
+
+Also, "currency" has to be checked according to (CURRENCY) rules.
+
+## Amounts (AMOUNT:EUR)
+
+This data type is derived from (AMOUNT). It is only allowed to contain EUR as currency, either by explicitly stating that in the "currency", or by omitting the currency (which defaults to EUR). 
+
+    "amount" : {
+        "value":12345678900,       // (INTEGER)
+        "precision":2,             // [INTEGER]
+        "currency":"EUR"           // [CURRENCY]
+    }
+
+### Checks & Error Codes
+
+In addition to all (AMOUNT) checks, (AMOUNT:EUR) can produce:
+
+error code         | purpose
+------------------ | ---------------------------------------------
+`CURRENCY_NOT_EUR` | The currency is not "EUR" or defaulting to "EUR".
+
+## Date (DATE)
+
+Date format without time (yyyy-MM-dd).
+
+    {
+        "aDate":"2011-07-14"  // (DATE)
+    }
+
+## Dates (DATETIME)
+
+Dates are returned as ISO 8601 dates and are used for both dates, times and timestamps. Using timezones is mandatory.
+
+    {
+        "aDate":"2011-07-14T19:43:37+0100",  // (DATETIME)
+        "anotherDate":"2012-03-11+0100",     // (DATETIME) that does not have a time
+    }
+
+All dates returned by the API are in the corresponding time zone a record/data object is for. For Austrian dates (e.g. transfer timestamps) this means Central European Standard Time (CEST). Austria is UTC+1 in winter and UTC+2 in summer, so times usually read `+0100` or `+0200`. Should, at a later time, the API be applied to other countries, the corresponding time zone for a given data object has to be used. 
+
+Note: Returning dates as UTC is discouraged because a client would not know what the intended target time zone is that a date has to be displayed in (e.g. an Austrian transaction still has to be shown with the correct Austrian execution time, even if the caller is using the API from e.g. the USA.)
+
+All dates provided by the client (e.g. a date for a future payment order) can be in any timezone. They will be converted to CEST on the server and this CEST version is used for all further processing - including storing or returning this now converted date to the client.
+
+### Checks & Error Codes
+
+error code         | purpose
+------------------ | ---------------------------------------------
+`DATE_INVALID`     | String does not contain a valid ISO 8601 date string.
+`TIMEZONE_MISSING` | a date without a timezone information was provided.
+`TIME_NOT_ZERO`    | The client should have provided a time, that (after CEST conversion) should have been 00:00, but isn't.
+
+## Enums (ENUM)
+
+Variables where the actual value is one of a predefined list (a.k.a. enums). The range of values are given as comma-separated list right in the datatype definition, e.g. (ENUM:GI,WP,SP,KA). Domain values are keys used in sIT's internal Domain Database, that provides company-wide reusable keys, short- and longtexts for them.
+
+    "some_domain_value":"SP"     // (ENUM:GI,WP,SP,KA)
+
+### Checks & Error Codes
+
+error code      | purpose
+--------------- | ---------------------------------------------
+`ENUM_UNKNOWN`  | Given element is not part of this (ENUM).
+
+## Flags (FLAGS)
+
+Flags/Tags/Roles that an object can have. To avoid adding a lot of case-specific boolean values, things that an object is nor not is are represented by flagging the object. Flags are an array of strings representing one aspect, e.g. one permission, one attribute or one role. The existence of a certain string in a Flag-List can be considered to be a "true" on this aspect, the absence of a certain string as a "false". The possible flags are listed on a case-by-case basis at each data type/call as comma-separated list within the brackets. 
+
+    "flags": [
+        "hidden", "transactionsHidden"   // (FLAGS:hidden,transactionsHidden,unused1,unused2)
+    ]
+
+Empty flag arrays can be omitted.
+
+### Checks & Error Codes
+
+error code      | purpose
+--------------- | ---------------------------------------------
+`FLAG_UNKNOWN`  | Given element is not possible/allowed as (FLAG).
+
+## International bank account numbers (IBAN)
+
+Based on ISO 13616-1:2007. A valid IBAN consists of all three of the following components: Country Code (2 capital letters), check digits (2 digits) and BBAN (local Basic Bank Account Number consisting of 1-30 characters). 
+
+    "iban": "AT896000000005544815"
+
+### Checks & Error Codes
+
+error code      | purpose
+--------------- | ---------------------------------------------
+`IBAN_INVALID`  | The given IBAN is not syntactically correct.
+
+## Business Identifier Code (BIC)
+
+BIC code (also know as SWIFT ID/code) standard format (based on ISO 9362) has 8 or 11 characters, made up of: 
+
+- 4 letters: Institution Code or bank code
+- 2 letters: ISO 3166-1 alpha-2 country code
+- 2 letters or digits: location code
+- 3 letters or digits: branch code, optional (possible default 'XXX' for primary office)
+
+Example:
+
+    "bic": "OPSKATWW"
+
+### Checks & Error Codes
+
+error code      | purpose
+--------------- | ---------------------------------------------
+`BIC_INVALID`   | The given BIC is not syntactically correct.
+
+## Bank Code (BANKCODE)
+
+Local bank code used in local bank clearing system, e.g. 5-digit bank code in AT, 4-digit bank code in CZ, SK.
+
+    "bankCode": "20111"
+
+
+## Account number (ACCOUNTNO)
+
+Account number consists of IBAN (IBAN plus optional BIC) identification or local account number (BBAN) plus mandatory bank code plus optional country code. This is due to fact, that using of IBAN format was not adopted in all the Erste group countries. Some applications of ACCOUNTNO are restricted to one of the two flavors only. F.i. when posting new SEPA payment orders sender and receiver accounts must be specified by IBAN format only, or when posting new Domestic payment in CSAS BBAN format should be used.  However when requesting existing transactions the receiver account may be returned in format BBAN or IBAN (for SEPA payments). Therefore the ACCOUNTNO object may in some cases only contain IBAN, only local BBAN, or both.
+
+    "accountNo" : {
+        "iban":"AT896000000005544815",    // [IBAN] IBAN or BBAN must be provided
+        "bic":"OPSKATWW",                  // [BIC] optional
+        "number": "23421",                // [TEXT] BBAN (or free account format for SWIFT when IBAN is not used) or IBAN must be provided
+        "bankCode": "20111",              // [BANKCODE] mandatory when BBAN is used
+        "countryCode": "AT"               // [TEXT2] mandatory for international orders
+    }
+
+Account attribute *number* and *bankCode* are not padded with zeros.
+Account attribute *number* in CZ consists of optional account prefix (TEXT6) and account number (TEXT10) and format is "XXXXXX-NNNNNNNNNN" if prefix is not null or "000000". If prefix is not provided then format is "NNNNNNNNNN" without leading zeros. 
+
+## Base64File (BASE64FILE)
+
+Represents a binary file with the (base64) encoded content and content type.
+
+    {
+        "contentBase64": (XS:base64Binary), // Encoded file content (base64Binary is defined in XML Schema)
+        "contentType": (TEXT)              // MIME type, e.g., "image/png", "image/gif"
+    }
+
+## SignInfo (SIGNINFO)
+
+Represents signing information for the requested order.
+
+    {
+        "state": (ENUM:OPEN,NONE), // OPEN: Order should be signed. NONE: Order has been executed without signing.
+        "signId": (STAMP24ID)      // Available when state is OPEN. Used for next signing calls.
+    }
+
+## Id (ID)
+
+Holds an id from a created entity.
+
+    {
+        id: (STAMPID)
+    }
+
+## Database Stamp Id (STAMPID)
+
+Represents a (TEXT36) id
+
+    eg:  db1fa43e-07f6-8240-8330-ed20c8307240
+
+## DVR (DVR)
+
+7-digit integer.
+
+    "dvr": "4711815"
+
+## Email (EMAIL)
+
+Represents an email.
+
+    {
+        "email": "john.doe@test.com"  // (EMAIL)
+    }
+
+# Group Banking Services
+Banking Services API consist of:
+- initial set of endpoints needed for George Overview page (Release 0)
+- endpoints for George Release 1 will be added continuously
+
+# Group Availability
+Initial check if WebAPI is available should be performed before using calls from this API.
+
+## Availability [/checkavailability]
+Resource Availability represents availability information of the local WebAPI solution.
+
+Description of **Availability** resource attributes: 
+
+| Level | Attribute name        | Type/Enum   | Mand/Opt | Attribute description              | Expected values/format |
+|-------|-----------------------|-------------|----------|------------------------------------|------------------------|
+| 1     | httpStatus            | INTEGER     | M        | HTTP status                        | e.g. value 200 or 503  |
+| 1     | notAvailables         | ARRAY of    | O        | List of Not available messages - localized  |               |
+| 2     | locale                | TEXT        | M        | Localization                       | e.g. `de_AT`, `en_US`  |
+| 2     | title                 | TEXT        | M        | Message title                      |                        |
+| 2     | description           | TEXT        | M        | Messade description                |                        |
+
+### WebAPI Availability Check [GET]
+This request allows client to check if WebAPI is in maintenance window/ error mode or fully available. The request shall be called by each application as a convenience check to avoid HTTP 503 errors calling WebAPI, when it is in maintenance/error mode.
+
+To execute the request call the following URL (AT example):
+
+ENV    | URL
+------ | --------------------------------------
+PROD   | https://api.sparkasse.at/checkavailability
+FAT    | https://api.fat.sparkasse.at/checkavailability
+           
+
+#### Request
+No parameters required
+
+#### Reply
+An **Availability** resource object.
+
+#### Error codes
+No call-specific error codes.
+
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                "httpStatus": "200"
+            }
+
++ Response 503 (application/json)
+
+    + Body
+
+            {
+                "httpStatus": "503",
+                "notAvailables": [
+                    {
+                        "locale": "de_AT",
+                        "title": "Wir bedauern...",
+                        "description": "Da wir gerade dabei sind die Funktionen und Services im netbanking für Sie zu erweitern, können wir Ihnen das netbanking derzeit leider nicht zur Verfügung stellen.\n\nWir sind bemüht, Ihnen unsere Services so rasch wie möglich wieder zur Verfügung zu stellen!\n\nDanke für Ihr Verständnis"
+                    },
+                    {
+                        "locale": "en_US",
+                        "title": "We are sorry",
+                        "description": "We are currently updating the netbanking functions and services; therefore netbanking is not available at the moment.\n\nOur services will be available as soon as possible.\n\nThank you for your appreciation."
+                    }
+                ]
+            }
+
+
+# Group Profiles
+Profile-related resources of *Banking Services API*.
+
+## Profile [/netbanking/my/profile]
+Resource Profile represents basic "netbanking" configuration of user/client profile.
+
+Description of **Profile** resource/type attributes: 
+
+| Level | Attribute name          | Type/Enum   | Mand/Opt | Attribute description                                                                                                                                                                 | Expected values/format |
+|-------|-------------------------|-------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------|
+| 1     | customerId              | TEXT16      | M        | Internal ID of customer                                                                                                                                                               | e.g. ABC12345                                                               |
+| 1     | firstname               | TEXT20      | M        | Customer first name                                                                                                                                                                   |                                                                             |
+| 1     | lastname                | TEXT35      | M        | Customer surname, last name                                                                                                                                                           |                                                                             |
+| 1     | individualGreeting      | TEXT140     | O        | Individual greeting message set by customer                                                                                                                                           |                                                                             |
+| 1     | alias                   | TEXT35      | O        | Alias of user name. Currently not used in George - for future it is going to be used in another apps, therefore it is stored in the BackEnd.                                          |                                                                             |
+| 1     | instituteId             | INTEGER     | O        | Institute ID (defined for each branch in AT, mandatory only for AT). George FE uses it only for showing logo if the value is provided.                                                |                                                                             |
+| 1     | lastlogin               | DATETIME    | O        | Optional date and time of the last login of customer. Common last login for all client applications - George, QC, etc.                                                                | ISO dateTime format: YYYY-MM-DDThh:mm:ssZ                                   |
+| 1     | offlineKey              | TEXT32      | O        | OfflineKey was used by QC - unused in George FE                                                                                                                                       |                                                                             |
+| 1     | supportCategory         | TEXT20      | O        | Optional value defining the type of support the user gets (if the backend provided value is unknown or empty, the field will not be delivered at all). Currently unused in George FE. | Possible values: `Premium`, `Individual`, `Top`, `Classic` and `Standard`   |
+| 1     | marketingInfoAcceptance | ENUM        | M        | Flag if customer accepted providing personal data for marketing purpose (§107 telecommunication act in AT)                                                                            | ENUM: `ACCEPTED`, `NOT_ACCEPTED`, `UNKNOWN`                                 |
+| 1     | gender                  | ENUM        | M        | Customer gender                                                                                                                                                                       | ENUM: `MALE`, `FEMALE`, `UNKNOWN`                                           |
+
++ Model
+
+    + Body
+
+            {
+                "customerId": "ABC1234567890123",
+                "firstname": "Max",
+                "lastname": "Mustermann",
+                "individualGreeting": "Hi Muster",
+                "alias": "MusterSuperman",
+                "instituteId": 188,
+                "supportCategory": "Premium",
+                "marketingInfoAcceptance": "ACCEPTED",
+                "gender": "MALE",
+                "lastlogin": "2013-11-28T16:18:10Z"
+            }
+
+### Retrieve a user profile [GET]
+Get basic information about the user whom provided authorization token belongs to / represents.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Profile** type containing basic "netbanking" configuration information about the user.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Profile][]
+
+## Profile Logininfo [/netbanking/my/profile/logininfo]
+Resource **Profile Logininfo** consist of embedded **Profile** type, but attribute *lastLogin* is not DATETIME, but ARRAY of pairs *lastLogin* and *channel*.
+
+Description of **Profile Logininfo** specific attributes (except Profile attributes): 
+
+| Level | Attribute name          | Type/Enum | Mand/Opt | Attribute description                                                      | Expected values/format |
+|-------|-------------------------|-----------|----------|----------------------------------------------------------------------------|------------------------|
+| 1     | lastLogin               | ARRAY     | O        | Collection of all available last logins of customer via different channels |                        |
+| 2     | channel                 | TEXT20    | M        | Channel identification for particular login                                | Possible values: `NB` - netBanking (only this value is currently used in George FE), `MB` - mobileBanking app like QuickCheck, Transactions  |
+| 2     | lastLogin               | DATETIME  | M        | Date and time of the last login of customer via particular channel         | ISO dateTime format: YYYY-MM-DDThh:mm:ssZ |
+
++ Model
+
+    + Body
+
+            {
+                "customerId": "ABC1234567890123",
+                "firstname": "Max",
+                "lastname": "Mustermann",
+                "individualGreeting": "Hi Muster",
+                "alias": "MusterSuperman",
+                "instituteId": 188,
+                "supportCategory": "Premium",
+                "marketingInfoAcceptance": "ACCEPTED",
+                "gender": "MALE",
+                "lastlogin": [
+                    {
+                        "channel": "MB",
+                        "lastlogin": "2014-01-23T11:38:52Z"
+                    },
+                    {
+                        "channel": "NB",
+                        "lastlogin": "2014-02-18T08:37:09Z"
+                    },
+                    {
+                        "channel": "NB",
+                        "lastlogin": "2014-01-07T15:04:15Z"
+                    }
+                ]
+            }
+
+
+### Retrieve profile info and list of user last logins [GET]
+Get basic information and list of the last logins of the user whom provided authorization token belongs to / represents.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Profile Logininfo** resource containing basic "netbanking" configuration information about the user together with "lastlogin" as array of all available lastLogin dates and the channels of the respective logins.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Profile Logininfo][]
+
+# Group Settings
+Settings-related resources of *Banking Services API*.
+
+## Settings [/netbanking/my/settings]
+Resource Settings represents serverside settings of user/client.
+
+Description of **Settings** resource/type attributes: 
+
+| Level | Attribute name         | Type/Enum     | Mand/Opt | Attribute description                                                                   | Expected values/format         |
+|-------|------------------------|---------------|----------|-----------------------------------------------------------------------------------------|--------------------------------|
+| 1     | language               | ENUM          | O        | User preffered language stored in BackEnd, default is local language                    | Values: `EN`, `DE`, `CZ`, `SK` |
+| 1     | landingAccount         | TEXT34        | O        | IBAN or local BBAN of landing account of user                                           | IBAN/BBAN format               |
+| 1     | tacPhoneNumbers        | ARRAY of TEXT | O        | List of available phone numbers, where to send a TAC SMS code                           | Phone numbers are masked       |
+| 1     | authorizationType      | ENUM          | M        | User preffered authorization type                                                       | ENUM: `TAC`, `TAN`, other local authorization type has to be defined |
+| 1     | passwordExpiresInDays  | INTEGER       | M        | Number of days to password expiration provided by BackEnd                               |                                |
+| 1     | flags                  | FLAGS         | O        | Array of optional flag values, the absence of a certain string is considered as “false” | Flags values - see table below |
+
+**Note:** Current User story (CSAS-R1: GRCZ-22, GRCZ-20) doesn't use *language* field provided by this resource from BackEnd.
+When user selects his preferred language (either in George – menu Settings, or on login page), this language is saved in **cookies**. When George/login page is loaded, it selects display language based on:
+
+1. Cookies
+2. Browser header
+3. If neither of the two has a language stored, default George local language is used. 
+
+
+The following flags can be applied to field *flags* in **Settings** resource:
+
+Flag                            | Description
+------------------------------- | -----------------------------------------------
+`displayInsurances`             | Insurance contracts are displayed in online banking (George).
+`displayLeasings`               | Leasing contracts are displayed in online banking (George).
+`displayBuildings`              | Buildings society contracts are displayed in online banking (George).
+`displayCreditCards`            | Credit cards are displayed in online banking (George).
+`displayInvestments`            | Investment securities are displayed in online banking (George).
+
++ Model
+
+    + Body
+
+            {
+                "language": "EN",                     
+                "landingAccount": "CZ5508000000000379554193",             
+                "tacPhoneNumbers": [                  
+                    "+420*****1234,
+                    "+421*****1007
+                ],
+                "authorizationType": "TAC",   
+                "passwordExpiresInDays": 129,     
+                "flags": ["displayInsurances", "displayLeasings", "displayCreditCards"] 
+            }
+
+### Retrieve a user settings [GET]
+Get netbanking settings of the user whom provided authorization token belongs to / represents.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Settings** resource containing basic serverside settings of user/client.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Settings][]
+
+# Group Messages
+Message-related resources of *Banking Services API*.
+
+## Message [/netbanking/my/messages/{id}]
+Message type represents message in the George personal inbox of the user.
+
+Description of **Message** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum | Mand/Opt | Attribute description                                                                   | Expected values/format   |
+|-------|----------------|-----------|----------|-----------------------------------------------------------------------------------------|--------------------------|
+| 1     | id             | TEXT16    | M        | Internal ID of message                                                                  |                          |
+| 1     | from           | TEXT20    | M        | Source system of message, who created message                                           | e.g. `netbanking`        |
+| 1     | subject        | TEXT140   | M        | Subject of the message provided by source system (in particular language)               |                          |
+| 1     | date           | DATETIME  | M        | Date and time of message creation/generation                                            | ISO dateTime format:  YYYY-MM-DDThh:mm:ssZ |
+| 1     | body           | HTML      | M        | Text of the message, could be as html                                                   |                          |
+| 1     | attachments    | ARRAY of ATTACHMENT | O        | Optional array of attachment metadata (_embedded resource)                    |                          |
+| 2     | id             | TEXT16    | M        | Message attachment ID                                                                   | e.g. 141951229267        |
+| 2     | fileName       | TEXT35    | M        | File name of Message attachment                                                         | name.extension, like "test.doc" |
+| 1     | flags          | FLAGS     | O        | Array of optional flag values, the absence of a certain string is considered as “false” | Flags values - see table below |
+
+The following flags can be applied to field *flags* in **Message** resource:
+
+Flag        | Description
+------------|-----------------------------------------------
+`mandatory` | This is a mandatory message.
+`unread`    | This message is unread by user.
+`unsigned`  | This message is unsigned yet.
+`warning`   | Type of message is warning.
+`info`      | Type of message is information.
+
++ Parameters
+    + id (TEXT16) ... ID of the user message in inbox used as URI parameter.
+
++ Model
+
+    + Body
+
+            {
+                "id": "131371121204",
+                "from": "netbanking",
+                "subject": "once again for the API",
+                "date": "2013-05-17T00:00:00+02:00",
+                "body": "please read this message, really urgent",
+                "attachments": [
+                    {
+                        "id": "141951229267",
+                        "fileName": "test.doc"
+                    },
+                    {
+                        "id": "141951230156",
+                        "fileName": "test2.pdf"
+                    }
+                ],
+                "flags": [
+                    "unread"
+                ]
+            }
+
+### Retrieve single message from personal inbox [GET]
+Get the details of one specific message, read or unread.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Message** resource containing details of one message from user inbox identified by parameter ID.
+
+#### Error codes
+
+Error code     | Scope    | Purpose
+---------------|----------|------------------------------------
+`ID_NOT_FOUND` | `id`     | The provided ID does not exist.
+
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Message][]
+
+## Message List [/netbanking/my/messages?{&size,page}?{&sort,order}]
+Resource Message List represents collection of messages in the George personal inbox of the user.
+This resource consists of paging attributes and array of *embedded* **Message** type items.
+
+Description of **Message List** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum        | Mand/Opt | Attribute description                                                | Expected values/format   |
+|-------|----------------|------------------|----------|----------------------------------------------------------------------|--------------------------|
+| 1     | pageNumber     | INTEGER          | M        | Page number of returned page, starting from 0 for the first page     |                          |
+| 1     | pageCount      | INTEGER          | M        | Total number of pages of defined size                                |                          |
+| 1     | nextPage       | INTEGER          | M        | Page number of following page                                        |                          |
+| 1     | pageSize       | INTEGER          | M        | Provided or defaulted page size                                      |                          |
+| 1     | messages       | ARRAY of MESSAGE | O        | Array of messages in the personal inbox of the user (could be empty) |                          |
+
++ Parameters
+    + size (INTEGER, optional) ... Page size used as URI parameter. There is no predefined size limit. If it is omitted, all records are returned in one large list.
+    + page (INTEGER, optional) ... Requested page number used as URI parameter. Page count starts at zero, so 0 is the first page. If size is given without any page, page=0 is assumed as default.
+    + sort (TEXT, optional) ... Possible sort fields are: `from`, `date` and `id`. If no sort is given, a random order has to be assumed that can change between calls.
+    + order (TEXT, optional) ... Sorting order can be either `asc` or `desc` (case insensitive), with `asc` as default. Sorting multiple fields at the same time is possible by comma-separating the sorting fields and their corresponding sort orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding order entries are considered to be asc.
+
++ Model
+
+    + Body
+
+            {
+                "pageNumber": 0,
+                "pageCount": 1,
+                "nextPage": 0,
+                "pageSize": 20,
+                "messages": [
+                    {
+                        "id": "131371121204",
+                        "from": "netbanking",
+                        "subject": "once again for API testing",
+                        "date": "2013-05-17T00:00:00+02:00",
+                        "body": "please read this message, really urgent",
+                        "attachments": [
+                            {
+                                "id": "141951229267",
+                                "fileName": "test.doc"
+                            },
+                            {
+                                "id": "141951230156",
+                                "fileName": "test2.doc"
+                            }
+                        ],
+                        "flags": [
+                            "unread"
+                        ]
+                    },
+                    {
+                        "id": "131370923151",
+                        "from": "Absender",
+                        "subject": "nb MUSS Nachricht",
+                        "date": "2013-05-17T00:00:00+02:00",
+                        "body": "Inhalt",
+                        "flags": [
+                            "mandatory"
+                        ]
+                    },
+                    {
+                        "id": "131370922317",
+                        "from": "Absender",
+                        "subject": "nb KANN Nachricht",
+                        "date": "2013-05-17T00:00:00+02:00",
+                        "body": "Inhalt"
+                    }
+                ]
+            }
+
+### Retrieve list of messages from personal inbox [GET]
+Get list of all messages, read or unread, mandatory and non-mandatory. This call is paginated and can be sorted by fields `from`, `date` and `id`. This call might return different messages based on appId of the caller (for example, some messages might be specific to an particular application). Which messages can be seen by which application should be configured on the server side.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Message List** with paging info and possibly empty array of **Message** items from user inbox.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Message List][]
+
+## Mandatory Message List [/netbanking/my/messages/mandatory]
+Resource Mandatory Message List represents collection of messages with flag `mandatory` in the George personal inbox of the user.
+This resource consists of array of *embedded* **Message** type items.
+
++ Model
+
+    + Body
+
+            [
+                {
+                    "id": "131371121204",
+                    "from": "netbanking",
+                    "subject": "once again for the API",
+                    "date": "2013-05-17T00:00:00+02:00",
+                    "body": "please read this message, really urgent",
+                    "attachments": [
+                        {
+                            "id": "141951229267",
+                            "fileName": "test.doc"
+                        },
+                        {
+                            "id": "141951230156",
+                            "fileName": "test2.pdf"
+                        }
+                    ],
+                    "flags": [
+                        "mandatory"
+                    ]
+                },
+                {
+                    "id": "131370923151",
+                    "from": "Absender",
+                    "subject": "nb MUSS Nachricht",
+                    "date": "2013-05-17T00:00:00+02:00",
+                    "body": "Must see offer",
+                    "flags": [
+                        "mandatory"
+                    ]
+                }
+            ]
+
+### Retrieve all mandatory messages from personal inbox [GET]
+Return all mandatory messages. This call can return different messages based on appId of the caller (for example, some messages could be specific to an application). Which messages can be seen by which application can be configured on the server side.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Mandatory Message List** with possibly empty array of **Message** items with mandatory flag.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Mandatory Message List][]
+
+# Group Limits
+Limit-related resources of *Banking Services API*.
+
+## Limits [/netbanking/my/limits]
+Limits type represents payment order entry limits defined for authorization menthods.
+
+**Note:** Local specification of this resource depends on authorization methods used in particular country.
+
+Description of **Limits** resource/type attributes (used in AT): 
+
+| Level | Attribute name | Type/Enum | Mand/Opt | Attribute description                                                               | Expected values/format   |
+|-------|----------------|-----------|----------|-------------------------------------------------------------------------------------|--------------------------|
+| 1     | TAC            | structure | O        | Just structure grouping TAC limits                                                  |                          |
+| 2     | standardDaily  | AMOUNT    | O        | Optional standard daily limit for TAC authorization method (_embedded AMOUNT type)  | Fields value, precision, currency |
+| 2     | mobileDaily    | AMOUNT    | O        | Mobile daily limit for TAC authorization method (_embedded AMOUNT type)             | Fields value, precision, currency |
+| 2     | transaction    | AMOUNT    | O        | Transaction limit for TAC authorization method (_embedded AMOUNT type)              | Fields value, precision, currency |
+| 1     | TAN            | structure | O        | Just structure grouping TAN limits                                                  |                          |
+| 2     | standardDaily  | AMOUNT    | O        | Daily limit for TAN authorization method (_embedded AMOUNT type)                    | Fields value, precision, currency |
+| 2     | maxTanLimit    | AMOUNT    | O        | Maximal daily limit for TAN authorization method defined by bank (_embedded AMOUNT type) | Fields value, precision, currency |
+| 2     | transaction    | AMOUNT    | O        | Transaction limit for TAN authorization method (_embedded AMOUNT type)              | Fields value, precision, currency |
+
++ Model
+
+    + Body
+
+            {
+                "TAC": {
+                    "standardDaily": {
+                        "value": 400000,
+                        "precision": 2,
+                        "currency": "EUR"
+                    },
+                    "mobileDaily": {
+                        "value": 150000,
+                        "precision": 2,
+                        "currency": "EUR"
+                    },
+                    "transaction": {
+                        "value": 100000,
+                        "precision": 2,
+                        "currency": "EUR"
+                    }
+                },
+                "TAN": {
+                    "standardDaily": {
+                        "value": 499999,
+                        "precision": 2,
+                        "currency": "EUR"
+                    },
+                    "maxTanLimit": {
+                        "value": 1000000,
+                        "precision": 2,
+                        "currency": "EUR"
+                    },
+                    "transaction": {
+                        "value": 100000,
+                        "precision": 2,
+                        "currency": "EUR"
+                    }
+            }
+
+### Get netbanking payment order limits [GET]
+Return all local specific payment order entry limits for authorization methods used in country.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Limits** with limit values defined in *embedded* type **Amount**.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Limits][]
+
+## Payment Limit Info [/netbanking/my/orders/payments/info]
+Payment Limit Info resource represents remaining daily limit amounts for authorization methods used for signing new payment order(s) in particular day.
+
+**Note:** Local specification of this resource depends on authorization methods used in particular country.
+
+Description of **Payment Limit Info** resource attributes (used in AT): 
+
+| Level | Attribute name             | Type/Enum | Mand/Opt | Attribute description                                                                          | Expected values/format            |
+|-------|----------------------------|-----------|----------|------------------------------------------------------------------------------------------------|-----------------------------------|
+| 1     | remainingAmountStandardTAC | AMOUNT    | O        | Rest of the amount which can be transferred from George by TAC-SMS (_embedded AMOUNT type)     | Fields value, precision, currency |
+| 1     | remainingAmountMobileTAC   | AMOUNT    | O        | Rest of the amount which can be transferred from mobile app by TAC-SMS (_embedded AMOUNT type) | Fields value, precision, currency |
+| 1     | remainingAmountTAN         | AMOUNT    | O        | Rest of the amount which can be transferred from any platform by TAN (_embedded AMOUNT type)   | Fields value, precision, currency |
+
++ Model
+
+    + Body
+
+            {
+                "remainingAmountStandardTAC": {
+                    "value": 99900,
+                    "precision": 2,
+                    "currency": "EUR"
+                },
+                "remainingAmountMobileTAC": {
+                    "value": 25000,
+                    "precision": 2,
+                    "currency": "EUR"
+                },
+                "remainingAmountTAN": {
+                    "value": 900000,
+                    "precision": 2,
+                    "currency": "EUR"
+                }
+            }
+
+### Get remaining amounts for payment orders authorization [GET]
+Return remaining amounts of local specific daily limits for authorization methods used in country. Unsigned orders will not be considered in the calculation of the remaining amounts.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Payment Limit Info** with limit remaining amounts.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Payment Limit Info][]
+
+
+# Group Accounts
+Account-related resources of *Banking Services API*.
+
+## Account Detail [/netbanking/my/accounts/{id}]
+Account Deatil type represents user account product of different account types (current account, saving account, loan account, credit card account).
+
+Description of **Account Detail** resource/type attributes: 
+*Marek's note: Account Detail will be extended, so far only atributes needed for Account list - Overview page* 
+*Marek's note: Linked saving account info (saved amount requested in CZ US) is not part of group current account structure, because in other banks this saving account is displayed as separated account overview card with own account number and name. Also Linked services to account are not part of group account resource.*
+
+| Level | Attribute name       | Type/Enum | Mand/Opt | Editable          | Attribute description                                                                                                                                              | Expected values/format                                                                                                                                                             |
+|-------|----------------------|-----------|----------|-------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1     | id                   | TEXT16    | M        | No                | Internal ID as reference for account                                                                                                                               |                                                                                                                                                                                    |
+| 1     | accountno            | ACCOUNTNO | M        | No                | Account number (_embedded ACCOUNTNO type)                                                                                                                          |                                                                                                                                                                                    |
+| 1     | type                 | ENUM      | M        | No                | Product Type of account (Current, Saving, Loan, Credit Card).                                                                                                      | Values: `CURRENT`, `SAVING`, `LOAN`, `CREDIT_CARD`                                                                                                                                 |
+| 1     | product              | TEXT35    | M        | No                | Product name of account. Localization of expected values and George FE behavior is needed, because Erste Group doesn't use harmonized group product definitions.   | Values in AT: `girokonto`, `bonuscard`, `einlagekonto`, `kapitalsparkonto`, `praemiensparkonto`, `profitcard`, `splussparen`, `terminsparkonto`, `wachstumssparen`, `finanzierung` |
+| 1     | productI18N          | TEXT35    | M        | No                | Localized product name of account depending on Accept-Language header field (if user preferred language is stored in BE, then localized name in this language).    |                                                                                                                                                                                    |
+| 1     | description          | TEXT200   | O        | No                | Account description                                                                                                                                                |                                                                                                                                                                                    |
+| 1     | alias                | TEXT35    | O        | Yes               | Account alias stored in BackEnd (could be reused in mobile app as well).                                                                                           |                                                                                                                                                                                    |
+| 1     | ~~currency~~         | ISO4217   | ~~M~~    | No                | Currency code of account - balance.currency will be used instead of this field                                                                                     |                                                                                                                                                                                    |
+| 1     | balance              | AMOUNT    | M        | No                | Account balance (Saved amount for Saving Accounts, Principal Outstanding for Loan Accounts, Available amount for Credit Card Account) is provided only if account is not offline/in closing (_embedded AMOUNT type)  | Fields value, precision, currency                                                                                                    |
+| 1     | disposable           | AMOUNT    | O        | No                | Disposable balance is provided only if account is not offline/in closing (_embedded AMOUNT type)                                                                   | Fields value, precision, currency                                                                                                                                                  |
+| 1     | overdraft            | AMOUNT    | O        | No                | Overdraft amount for account (_embedded AMOUNT type)                                                                                                               | Fields value, precision, currency                                                                                                                                                  |
+| 1     | creditInterestRate   | FLOAT     | O        | No                | Basic credit Interest rate, used for current and saving account                                                                                                    |                                                                                                                                                                                    |
+| 1     | debitInterestRate    | FLOAT     | O        | No                | Basic debit Interest rate, used for ovedraft, loan account                                                                                                         |                                                                                                                                                                                    |
+| 1     | penaltyInterestRate  | FLOAT     | O        | No                | Penalty debit Interest rate, used for not allowed ovedraft, rate after due date for loan                                                                           |                                                                                                                                                                                    |
+| 1     | saving               | structure | O        | No                | Structure for saving accounts                                                                                                                                      |                                                                                                                                                                                    |
+| 2     | targetAmount         | AMOUNT    | O        | No                | Target amount used only for saving account (_embedded AMOUNT type)                                                                                                 | Fields value, precision, currency                                                                                                                                                  |
+| 2     | savingGoal           | TEXT35    | O        | No                | Saving goal - saving purpose defined by user, used only for saving account                                                                                         |                                                                                                                                                                                    |
+| 1     | loan                 | structure | O        | No                | Structure for loan accounts                                                                                                                                        |                                                                                                                                                                                    |
+| 2     | loanAmount           | AMOUNT    | M        | No                | Total contracted loan amount value (_embedded AMOUNT type)                                                                                                         | Fields value, precision, currency                                                                                                                                                  |
+| 2     | installmentAmount    | AMOUNT    | M        | No                | Next rate/Installment amount value (_embedded AMOUNT type)                                                                                                         | Fields value, precision, currency                                                                                                                                                  |
+| 2     | installmentFrequency | ENUM      | M        | No                | Installment time frequency                                                                                                                                         | Values: WEEKLY, MONTHLY, QUARTERLY, HALFYEARLY, YEARLY                                                                                                        |
+| 2     | nextRateNumber       | INTEGER   | O        | No                | Sequence number of the next rate/Installment                                                                                                                       |                                                                                                                                                                                    |
+| 2     | nextRateDate         | DATETIME  | O        | No                | Next rate/Installment date                                                                                                                                         | ISO dateTime format                                                                                                                                                                |
+| 2     | nextRateType         | TEXT      | O        | No                | Next rate/Installment type of reduction (used probably only in AT)                                                                                                 |                                                                                                                                                                                    |
+| 1     | card                 | structure | O        | No                | Structure for credit card accounts                                                                                                                                 |                                                                                                                                                                                    |
+| 2     | cardAccountLimit     | AMOUNT    | M        | No                | Card account limit for linked credit card(s) - one limit for all cards (_embedded AMOUNT type)                                                                     | Fields value, precision, currency                                                                                                                                                  |
+| 2     | outstandingAmount    | AMOUNT    | M        | No                | Current Outstanding/Drawndown amount in total for all credit cards linked to account (_embedded AMOUNT type)                                                           | Fields value, precision, currency                                                                                                                                                  |
+| 2     | installmentMinAmount | AMOUNT    | O        | No                | Minimal installment amount to be paid for settlement cycle from total Outstanding/Drawn amount (_embedded AMOUNT type)                                             | Fields value, precision, currency                                                                                                            |
+| 2     | linkedCards          | ARRAY of  | O        | No                | Array structure for all credit cards linked to account                                                                                                             | Fields value, precision, currency                                                                                                                                                |
+| 3     | id                   | TEXT16    | M        | No                | Internal ID of credit card linked to account                                                                                                                       |                                                                                                                                                                              |
+| 3     | maskedPan            | TEXT20    | M        | No                | Masked card number (PAN - primary account number, ISO 7812 format), only first 6 and last 4 digits are displayed, asterisk is used for the rest of digits          | Masked format displayed like `5407 18** **** 8694`                                                                                                                        |
+| 3     | holderName           | TEXT50    | M        | No                | Card holder full name (first, last name)                                                                                                                           |                                                                                                                                                                              |
+| 3     | productCode          | TEXT16    | O        | No                | Product code of card to be able to show relevant card logo (Visa, Mastercard products)                                                                             |                                                                                                                                                                              |
+| 1     | flags                | FLAGS     | O        | Yes,(remove only) | Array of optional Flag values depends on account type, the absence of a certain string is considered as “false”                                                    | Flags values - see table below                                                                                                                                                     |
+
+The following flags can be applied to field *flags* in **Account** resource:
+
+Flag                            | Description
+------------------------------- | -----------------------------------------------
+`accountQueryAllowed`           | User may see the transaction list for this account ("Kontoabfrage").
+`ownTransferAllowed`            | Account may be used for transfer between own accounts.
+`domesticTransferAllowed`       | Account may be used for domestic payments.
+`collectiveSigning`             | Indicates if orders sended from this account have two be signed by at least to users
+`internationalTransferAllowed`  | Account may be used for foreign payments.
+`urgentTransferAllowed`         | Account may be used for urgent transfers ("Eilueberweisung").
+`offline`                       | Account is offline (no transactions can be requested), but still visible to the user. e.g. account is currently `closing`
+`owner`                         | Current user is owner of the account
+`dcsAllowed`                    | Account is enabled for "Data Carrier Service".
+`transactionsHidden`            | Display of account transactions is disabled.
+
+An account can represent one of the following account types and products (values used in AT):
+
+| Account.type    | Account.product (defined in AT)
+|-----------------|------------------------------
+| `CURRENT`       | `girokonto`
+| `SAVING`        | `bonuscard`<br>`einlagekonto`<br>`kapitalsparkonto`<br>`praemiensparkonto`<br>`profitcard`<br>`splussparen`<br>`terminsparkonto`<br>`wachstumssparen`
+| `LOAN`          | `finanzierung`
+| `CREDIT_CARD`   | `komfortcard`
+
+`nextRateType` means type of reduction. The following values are defined in AT:
+
+|Value|German                                                      |English                                              |
+|-----|------------------------------------------------------------|-----------------------------------------------------|
+|`0`  |Nullstellung zu einem bestimmten Termin                     |Zero setting at due date                             |
+|`1`  |Jahrliche Reduktion                                         |Annual reduction                                     |
+|`2`  |Halbjahrliche Reduktion                                     |Semi-annual reduction                                |
+|`3`  |Vierteljahrliche Reduktion                                  |Quarterly reduction                                  |
+|`4`  |Monatliche Reduktion                                        |Monthly reduction                                    |
+|`5`  |Einmalige Reduktion um den angegebenen Reduktionsbetrag     |One time reduction by stated amout of reduction      |
+|`6`  |Rahmenanp. kleiner Saldo                                    |Coverage adjustment small account balance            |
+|`7`  |Rahmenanp. Saldo                                            |Coverage adjustment account balance                  |
+|`8`  |Automatische Verlangerung                                   |Automatic renewal                                    |
+
++ Parameters
+    + id (TEXT16) ... internal ID of the account used as URI parameter.
+
++ Model
+
+    + Body
+
+            {
+                "id": "CCA4F9863D686D04",
+                "accountno": {
+                    "iban": "AT840118800000005579",
+                    "bic": "SPBAAT20XXX"
+                },
+                "type": "CURRENT",
+                "product": "girokonto",
+                "productI18N": "Girokonto",
+                "description": "Helmut Fuchs Fuchs description ",
+                "alias": "Helmut Fuchs alias",
+                "balance": {
+                    "value": 111125,
+                    "precision": 2,
+                    "currency": "EUR"
+                },
+                "disposable": {
+                    "value": 0,
+                    "precision": 2,
+                    "currency": "EUR"
+                },
+                "overdraft": {
+                    "value": 0,
+                    "precision": 2,
+                    "currency": "EUR"
+                },
+                "creditInterestRate": 0.07,
+                "flags": [
+                    "accountQueryAllowed",
+                    "domesticTransferAllowed",
+                    "internationalTransferAllowed",
+                    "ownTransferAllowed"
+                ]
+            }
+
+### Retrieve single account of user [GET]
+Returns the information about one specific account.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+A **Account** resource containing details of one user account identified by parameter ID.
+
+#### Error codes
+
+Error code     | Scope    | Purpose
+---------------|----------|------------------------------------
+`ID_NOT_FOUND` | `id`     | The provided ID does not exist.
+
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Account Detail][]
+
+## Account List [/netbanking/my/accounts?{&size,page}?{&sort,order}?{type}]
+Resource Account List represents collection of accounts to which authorized user has access.
+This resource consists of paging attributes and array of *embedded* **Account** type items.
+
+Description of **Account List** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum        | Mand/Opt | Attribute description                                                | Expected values/format   |
+|-------|----------------|------------------|----------|----------------------------------------------------------------------|--------------------------|
+| 1     | pageNumber     | INTEGER          | M        | Page number of returned page, starting from 0 for the first page     |                          |
+| 1     | pageCount      | INTEGER          | M        | Total number of pages of defined size                                |                          |
+| 1     | nextPage       | INTEGER          | M        | Page number of following page                                        |                          |
+| 1     | pageSize       | INTEGER          | M        | Provided or defaulted page size                                      |                          |
+| 1     | accounts       | ARRAY of ACCOUNT | O        | Array of accounts accessible by the user (could be empty)            |                          |
+| 2     | id                   | TEXT16     | M        | Internal ID as reference for account                                                                                                                               |                                                                                                                                                                                    |
+| 2     | accountno            | ACCOUNTNO  | M        | Account number (_embedded ACCOUNTNO type)                                                                                                                          |                                                                                                                                                                                    |
+| 2     | type                 | ENUM       | M        | Product Type of account (Current, Saving, Loan, Credit Card).                                                                                                      | Values: `CURRENT`, `SAVING`, `LOAN`, `CREDIT_CARD`                                                                                                                                 |
+| 2     | product              | TEXT35     | M        | Product name of account. Localization of expected values and George FE behavior is needed, because Erste Group doesn't use harmonized group product definitions.   | Values in AT: `girokonto`, `bonuscard`, `einlagekonto`, `kapitalsparkonto`, `praemiensparkonto`, `profitcard`, `splussparen`, `terminsparkonto`, `wachstumssparen`, `finanzierung` |
+| 2     | productI18N          | TEXT35     | M        | Localized product name of account depending on Accept-Language header field (if user preferred language is stored in BE, then localized name in this language).    |                                                                                                                                                                                    |
+| 2     | description          | TEXT200    | O        | Account description                                                                                                                                                |                                                                                                                                                                                    |
+| 2     | alias                | TEXT35     | O        | Account alias stored in BackEnd (could be reused in mobile app as well).                                                                                           |                                                                                                                                                                                    |
+| 2     | ~~currency~~         | ISO4217    | ~~M~~    | Currency code of account - balance.currency will be used instead of this field                                                                                     |                                                                                                                                                                                    |
+| 2     | balance              | AMOUNT     | M        | Account balance (Saved amount for Saving Accounts, Principal Outstanding for Loan Accounts, Available amount for Credit Card Account) is provided only if account is not offline/in closing (_embedded AMOUNT type)  | Fields value, precision, currency                                                                                                    |
+| 2     | disposable           | AMOUNT     | O        | Disposable balance is provided only if account is not offline/in closing (_embedded AMOUNT type)                                                                   | Fields value, precision, currency                                                                                                                                                  |
+| 2     | overdraft            | AMOUNT     | O        | Overdraft amount for account (_embedded AMOUNT type)                                                                                                               | Fields value, precision, currency                                                                                                                                                  |
+| 2     | creditInterestRate   | FLOAT      | O        | Basic credit Interest rate, used for current and saving account                                                                                                    |                                                                                                                                                                                    |
+| 2     | debitInterestRate    | FLOAT      | O        | Basic debit Interest rate, used for ovedraft, loan account                                                                                                         |                                                                                                                                                                                    |
+| 2     | penaltyInterestRate  | FLOAT      | O        | Penalty debit Interest rate, used for not allowed ovedraft, rate after due date for loan                                                                           |                                                                                                                                                                                    |
+| 2     | saving               | structure  | O        | Structure for saving accounts                                                                                                                                      |                                                                                                                                                                                    |
+| 3     | targetAmount         | AMOUNT     | O        | Target amount used only for saving account (_embedded AMOUNT type)                                                                                                 | Fields value, precision, currency                                                                                                                                                  |
+| 3     | savingGoal           | TEXT35     | O        | Saving goal - saving purpose defined by user, used only for saving account                                                                                         |                                                                                                                                                                                    |
+| 2     | loan                 | structure  | O        | Structure for loan accounts                                                                                                                                        |                                                                                                                                                                                    |
+| 3     | loanAmount           | AMOUNT     | M        | Total contracted loan amount value (_embedded AMOUNT type)                                                                                                         | Fields value, precision, currency                                                                                                                                                  |
+| 3     | installmentAmount    | AMOUNT     | M        | Next rate/Installment amount value (_embedded AMOUNT type)                                                                                                         | Fields value, precision, currency                                                                                                                                                  |
+| 3     | installmentFrequency | ENUM       | M        | Installment time frequency                                                                                                                                         | Values: WEEKLY, MONTHLY, QUARTERLY, HALFYEARLY, YEARLY                                                                                                        |
+| 3     | nextRateNumber       | INTEGER    | O        | Sequence number of the next rate/Installment                                                                                                                       |                                                                                                                                                                                    |
+| 3     | nextRateDate         | DATETIME   | O        | Next rate/Installment date                                                                                                                                         | ISO dateTime format                                                                                                                                                                |
+| 3     | nextRateType         | TEXT       | O        | Next rate/Installment type of reduction (used probably only in AT)                                                                                                 |                                                                                                                                                                                    |
+| 2     | card                 | structure  | O        | Structure for credit card accounts                                                                                                                                 |                                                                                                                                                                                    |
+| 3     | cardAccountLimit     | AMOUNT     | M        | Card account limit for linked credit card(s) - one limit for all cards (_embedded AMOUNT type)                                                                     | Fields value, precision, currency                                                                                                                                                  |
+| 3     | outstandingAmount    | AMOUNT     | M        | Current Outstanding/Drawndown amount in total for all credit cards linked to account (_embedded AMOUNT type)                                                           | Fields value, precision, currency                                                                                                                                                  |
+| 3     | installmentMinAmount | AMOUNT     | O        | Minimal installment amount to be paid for settlement cycle from total Outstanding/Drawn amount (_embedded AMOUNT type)                                             | Fields value, precision, currency                                                                                                            |
+| 3     | linkedCards          | ARRAY of   | O        | Array structure for all credit cards linked to account                                                                                                             | Fields value, precision, currency                                                                                                                                                |
+| 4     | id                   | TEXT16     | M        | Internal ID of credit card linked to account                                                                                                                       |                                                                                                                                                                              |
+| 4     | maskedPan            | TEXT20     | M        | Masked card number (PAN - primary account number, ISO 7812 format), only first 6 and last 4 digits are displayed, asterisk is used for the rest of digits          | Masked format displayed like `5407 18** **** 8694`                                                                                                                        |
+| 4     | holderName           | TEXT50     | M        | Card holder full name (first, last name)                                                                                                                           |                                                                                                                                                                              |
+| 4     | productCode          | TEXT16     | O        | Product code of card to be able to show relevant card logo (Visa, Mastercard products)                                                                             |                                                                                                                                                                              |
+| 2     | flags                | FLAGS      | O        | Array of optional Flag values depends on account type, the absence of a certain string is considered as “false”                                                    | Flags values - see table below                                                                                                                                                     |
+
++ Parameters
+    + size (INTEGER, optional) ... Page size used as URI parameter. There is no predefined size limit. If it is omitted, all records are returned in one large list.
+    + page (INTEGER, optional) ... Requested page number used as URI parameter. Page count starts at zero, so 0 is the first page. If size is given without any page, page=0 is assumed as default.
+    + sort (TEXT, optional) ... Possible sort fields are: `iban`, `description`, `disposable` and `balance`. If no sort is given, a random order has to be assumed that can change between calls.
+    + order (TEXT, optional) ... Sorting order can be either `asc` or `desc` (case insensitive), with `asc` as default. Sorting multiple fields at the same time is possible by comma-separating the sorting fields and their corresponding sort orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding order entries are considered to be asc.
+    + type (TEXT, optional) ... This call delivers all types of accounts by default. It is possible to filter for certain product by using the type URI parameter optional comma-separated list of products. *(Functionality is currently not used in George)*
+
++ Model
+
+    + Body
+
+            {
+                "pageNumber": 0,
+                "pageCount": 2,
+                "nextPage": 1,
+                "pageSize": 100,
+                "accounts": [
+                    {
+                       "id": "CCA4F9863D686D04",
+                        "accountno": {
+                            "iban": "AT742099900000000018",
+                            "bic": "SPBAAT20XXX"
+                        },
+                        "type": "CURRENT",
+                        "product": "girokonto",
+                        "productI18N": "Girokonto",
+                        "description": "Mag. A. M. Mittermuster oder Felix ",
+                        "alias": "account alias 1",
+                        "balance": {
+                            "value": 386776,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "disposable": {
+                            "value": 586776,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "overdraft": {
+                            "value": 200000,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },            
+                        "flags": [
+                            "accountQueryAllowed",
+                            "collectiveSigning",
+                            "domesticTransferAllowed",
+                            "internationalTransferAllowed",
+                            "ownTransferAllowed",
+                            "urgentTransferAllowed"
+                        ]
+                    },
+                    {
+                        "id": "CCA4F9863D686D03",
+                        "accountno": {
+                            "iban": "AT522099900000000026",
+                            "bic": "SPBAAT20XXX"
+                        },
+                        "type": "CURRENT",
+                        "product": "girokonto",
+                        "productI18N": "Girokonto",
+                        "description": "Stefan Maier Name2",
+                        "alias": "my rich account",
+                        "balance": {
+                            "value": -1504698,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "disposable": {
+                            "value": 0,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "flags": [
+                            "accountQueryAllowed",
+                            "domesticTransferAllowed",
+                            "internationalTransferAllowed",
+                            "ownTransferAllowed",
+                            "urgentTransferAllowed"
+                        ]
+                    },
+                    {
+                        "id": "CCA4F9863D686D05",
+                        "accountno": {
+                            "iban": "AT840118800000005579",
+                            "bic": "SPBAAT20XXX"
+                        },
+                        "type": "LOAN",
+                        "product": "finanzierung",
+                        "productI18N": "Finanzierung konto",
+                        "description": "Stefan Maier loan",
+                        "alias": "my loan account",
+                        "balance": {
+                            "value": -11504698,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "debitInterestRate": 2.99,
+                        "penaltyInterestRate": 18.77,
+                        "loan": {
+                            "loanAmount": {
+                                "value": 17000000,
+                                "precision": 2,
+                                "currency": "EUR"
+                            },
+                            "installmentAmount": {
+                                "value": 178000,
+                                "precision": 2,
+                                "currency": "EUR"
+                            },
+                            "installmentFrequency": "MONTHLY",
+                            "nextRateNumber": 5,
+                            "nextRateDate": "2014-12-17T00:00:00+02:00",
+                            "nextRateType": 0
+                        },
+                        "flags": [
+                            "accountQueryAllowed"
+                        ]
+                    },
+                    {
+                        "id": "34839653",
+                        "accountno": {
+                            "accountNumber": "379554193",
+                            "bankCode": "0800",
+                            "countryCode": "CZ"
+                        },
+                        "type": "SAVING",
+                        "product": "EG.4511611002569547.5",
+                        "productI18N": "Sporici účet ČS",
+                        "description": "",   // now is always empty or null
+                        "alias": "muj sporko",
+                        "balance": {
+                            "value": 12617140,
+                            "precision": 2,
+                            "currency": "CZK"
+                        },
+                        "disposable": {
+                            "value": 12617140,
+                            "precision": 2,
+                            "currency": "CZK"
+                        },
+                        "creditInterestRate": 1.75,
+                        "saving": {
+                            "targetAmount": {
+                                "value": 40000000,
+                                "precision": 2,
+                                "currency": "CZK"
+                            },
+                            "savingGoal": "new family car",
+                        },
+                        "flags": [
+                            "owner",
+                            "accountQueryAllowed",
+                            "ownTransferAllowed",
+                            "domesticTransferAllowed"
+                        ]
+                    },
+                    {
+                        "id": "222234839653",
+                        "accountno": {
+                            "accountNumber": "19-123",
+                            "bankCode": "0800",
+                            "countryCode": "CZ"
+                        },
+                        "type": "CREDIT_CARD",
+                        "product": "EG.451161100256.8",
+                        "productI18N": "Kartovy ucet ČS",
+                        "description": "",   // now is always empty or null
+                        "alias": "muj CC ucet",
+                        "balance": {
+                            "value": 5617170,
+                            "precision": 2,
+                            "currency": "CZK"
+                        },
+                        "disposable": {
+                            "value": 5600140,
+                            "precision": 2,
+                            "currency": "CZK"
+                        },
+                        "debitInterestRate": 6.75,
+                        "penaltyInterestRate": 19.75,
+                        "card": {
+                            "cardAccountLimit": {
+                                "value": 12000000,
+                                "precision": 2,
+                                "currency": "CZK"
+                            },
+                            "outstandingAmount": {
+                                "value": 6382830,
+                                "precision": 2,
+                                "currency": "CZK"
+                            },
+                            "installmentMinAmount": {
+                                "value": 319150,
+                                "precision": 2,
+                                "currency": "CZK"
+                            },
+                            "linkedCards": [
+                                {
+                                    "id": "CB5E22A9B81C6E04",
+                                    "maskedPan": "422093XXXXXX2416",
+                                    "holderName": "Radek Sporivy",
+                                    "productCode": "Visa_Gold"
+                                },
+                                {
+                                    "id": "CB5E22A9B81C6E11",
+                                    "maskedPan": "422093XXXXXX3316",
+                                    "holderName": "Sarka Sporiva",
+                                    "productCode": "Visa_Standard"
+                                }
+                            ]
+                        },
+                        "flags": [
+                            "owner",
+                            "accountQueryAllowed",
+                            "ownTransferAllowed",
+                            "domesticTransferAllowed"
+                        ]
+                    }
+                ]
+            }
+
+### Get a list of accounts or products for current user [GET]
+Get possibly empty list of all accounts, products this user owns. This call is paginated and can be sorted.
+Per default this call delivers all types of accounts. It is possible to filter for certain product by using the *type* URI parameter.
+
+**Note:** Closed accounts could be displayed too, because BackEnd provides this information 90 days after account closing.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Account List** with possibly empty array of *embedded* **Account** items without transaction data.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Account List][]
+
+# Group Payments
+Payment-related resources of *Banking Services API*.
+
+## Payment [/netbanking/my/orders/payments/{id}]
+Payment type represents one single payment order entered by the user.
+
+Description of **Payment** resource/type attributes: 
+
+| Level | Attribute name   | Type/Enum       | Mand/Opt | Attribute description                                                                                                                                                                                                              | Expected values/format                                                                                                                                                             |
+|-------|------------------|-----------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1     | id               | TEXT32          | M        | Internal identifier of payment order (provided as response after payment creation from BE)                                                                                                                                         |                                                                                                                                                                                    |
+| 1     | referenceId      | TEXT32          | O        | Transaction reference ID provided by BE when payment order was executed                                                                                                                                                            |                                                                                                                                                                                    |
+| 1     | orderCategory    | ENUM            | M        | Payment order category determines whether payment is domestic, SEPA, international or inside the bank (domestic, but could be different processing) or between accounts of the same user (domestic, but with better fee policy).   | Values: `DOMESTIC`, `SEPA`, `INTERNATIONAL`, `OWN_TRANSFER` (should be used instead of flags in current George AT), maybe `INTRA_BANK`                                             |
+| 1     | orderType        | ENUM            | M        | Payment order type (outgoing payment, outgoing direct debit, incoming direct debit) determines further transaction processing in BE.                                                                                               | Values: `PAYMENT_OUT`, `DIRECT_DEBIT_OUT`, `DIRECT_DEBIT_IN` (incoming DD from partner's account bank)                                                                             |
+| 1     | priority         | ENUM            | M        | Priority of payment order (used for urgent payment order in SEPA, SWIFT and maybe also in local bank clearing systems) - default value is STANDARD.                                                                                | Values: `STANDARD`, `HIGH`                                                                                                                                                         |
+| 1     | state            | ENUM            | M        | State of payment order presented to user on FE, value is mapped based on provided BE technical states.                                                                                                                             | Values: `created`, `open`, `spooled`, `closed` or `deleted` (should be used instead of flag `deleted` in current George AT)                                                        |
+| 1     | stateDetail      | TEXT10          | O        | Technical state of payment order provided by BE. Mapping between technical BE states and predefined FE states should be specified by local API.                                                                                    | Example of state mapping used in AT - see table below.                                                                                                                             |
+| 1     | sender           | ACCOUNTNO       | M        | Account number  of the sender (embedded ACCOUNTNO type: IBAN with optional BIC or local account number with mandatory local bank code)                                                                                             | IBAN format for AT, SK, local bank number for CZ                                                                                                                                   |
+| 1     | senderName       | TEXT35          | M        | Name of sender, who created payment order (value provided by BE)                                                                                                                                                                   |                                                                                                                                                                                    |
+| 1     | endToEndId       | One of          | O        | Payment End-to-End-Identification (called Originator’s Reference) could be One of senderReference or Symbols structure. (This corresponds to SEPA field endToEndInformation)                                                       |                                                                                                                                                                                    |
+| 2     | senderReference  | TEXT140         | C        | Optional sender's (payer/collector) reference number, which is transfered to receiver to reconsile payment                                                                                                                         |                                                                                                                                                                                    |
+| 2     | symbols          | structure       | C        | Symbols structure for VS, SS, KS used in CZ and SK (Symbols in SK will be provided only when Sender Reference was filled in format /VS##########/SS##########/KS####. Fields will by parsed from Sender Reference matching corresponding symbols |                                                                                                                                                                      |
+| 3     | variableSymbol   | TEXT10          | O        | Variable symbol (VS) used as payer's reference/invoice ID/customer ID (VS could be masked with * for Card number/PAN)                                                                                                              |                                                                                                                                                                                    |
+| 3     | specificSymbol   | TEXT10          | O        | Specific symbol (SS) used as payer's reference/customer ID/time period identification                                                                                                                                              |                                                                                                                                                                                    |
+| 3     | constantSymbol   | TEXT4           | O        | Constant symbol (KS) code used for payment categorization (for local national bank)                                                                                                                                                |                                                                                                                                                                                    |
+| 1     | receiver         | ACCOUNTNO       | M        | Account number  of the receiver (embedded ACCOUNTNO type: IBAN with optional BIC or local account number with mandatory local bank code or free text account with bank code/BIC with country code)                                 |                                                                                                                                                                                    |
+| 1     | receiverName     | TEXT35          | M        | Name of receiver of payment order                                                                                                                                                                                                  |                                                                                                                                                                                    |
+| 1     | amount           | AMOUNT          | M        | Payment amount in defined currency and with precision (embedded AMOUNT type)                                                                                                                                                       |                                                                                                                                                                                    |
+| 1     | transferDate     | DATE            | O        | Requested due date entered by user (could be in near future), date when payment order should be transferred from user account.                                                                                                     | Default value could be current business day in line with local CutOff times for diferrent types of payment order (domestic, SEPA, SWIFT, intra bank). ISO date format:  YYYY-MM-DD |
+| 1     | creationDate     | DATETIME        | M        | DateTime when Payment order was created (or modified the last time) by user                                                                                                                                                        | ISO dateTime format:  YYYY-MM-DDThh:mm:ssZ                                                                                                                                         |
+| 1     | modificationDate | DATETIME        | O        | Payment order could be modified by user til this dateTime (provided by BE)                                                                                                                                                         | ISO dateTime format:  YYYY-MM-DDThh:mm:ssZ                                                                                                                                         |
+| 1     | executionDate    | DATETIME        | O        | Date when payment order was actually executed by BE system, Booking date for done payments                                                                                                                                         | ISO dateTime format:  YYYY-MM-DDThh:mm:ssZ                                                                                                                                         |
+| 1     | valueDate        | DATETIME        | O        | Effective value date (Datum valuty) of the BE during execution of Payment order (provided by BE)                                                                                                                                   | ISO dateTime format:  YYYY-MM-DDThh:mm:ssZ                                                                                                                                         |
+| 1     | additionalInfo   | One Of          | O        | Payment Additional info structure with exclusive elements - Only One Of them could be used in the payment order. (This attribute corresponds to SEPA/SWIFT field remittanceInformation)                                            |                                                                                                                                                                                    |
+| 2     | text             | ARRAY of TEXT35 | C        | Array of additional text fields, max 4x 35 characters. Payment description, message for receiver.                                                                                                                                  |                                                                                                                                                                                    |
+| 2     | paymentReference | TEXT140         | C        | Payment reference used to identify payment order on receiver side.                                                                                                                                                                 |                                                                                                                                                                                    |
+| 2     | ~~at-tax~~       | ~~TAXPAYMENT~~  | O        | Tax information structure specific only for AT, therefore will not be part of group definition, but will be in AT local specification with prefix "at-".                                                                           |                                                                                                                                                                                    |
+| 1     | channelId        | TEXT16          | M        | Channel ID via which payment order has been entered by user                                                                                                                                                                        | Possible values: `GEORGE`, `MOBILE_APP`, `BUSINESS24`, or `UNKNOWN`                                                                                                                |
+| 1     | flags            | FLAGS           | O        | Array of optional Flag values depends on Payment order type                                                                                                                                                                        | FLAGS: `collective`, `advanceInterestBonusLost`                                                                                                                                    |
+
+The following flags can be applied to field *flags* in **Payment** resource:
+
+Flag         | Description
+-------------|-----------------------------------------------
+`collective`               | This order was created as collaborative order. Orders flagged as collective are not signable (co-signing process must be defined)
+`advanceInterestBonusLost` | This flag is returned if signing this order will (probably) result in lost savings.
+
++ Parameters
+    + id (TEXT32) ... ID internal identifier of payment order used as URI parameter.
+
+### Remove one specific payment order [DELETE]
+Delete one specific payment order identified by ID.
+
+**Note:** It is possible to delete only payment orders in state `create` or `open`.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+No content.
+
+#### Error codes
+error code           | scope           | purpose
+-------------------- | --------------- | ----------------------------
+`ID_NOT_FOUND`       | order           | The item could not be found.
+`STATE_INVALID`      | order           | The order is in a state that does not allows deleting.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 204
+
+## Payment List [/netbanking/my/orders/payments?{&size,page}?{&sort,order}?{state}?{channel}]
+Resource Payment List represents collection of all payment orders entered by user and not deleted.
+This resource consists of paging attributes and array of *embedded* **Payment** type items.
+
+Description of **Payment List** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum        | Mand/Opt | Attribute description                                                | Expected values/format   |
+|-------|----------------|------------------|----------|----------------------------------------------------------------------|--------------------------|
+| 1     | pageNumber     | INTEGER          | M        | Page number of returned page, starting from 0 for the first page     |                          |
+| 1     | pageCount      | INTEGER          | M        | Total number of pages of defined size                                |                          |
+| 1     | nextPage       | INTEGER          | M        | Page number of following page                                        |                          |
+| 1     | pageSize       | INTEGER          | M        | Provided or defaulted page size                                      |                          |
+| 1     | orders         | ARRAY of PAYMENT | O        | Array of payment orders entered by the user (could be empty)         |                          |
+
++ Parameters
+    + size (INTEGER, optional) ... Page size used as URI parameter. There is no predefined size limit. If it is omitted, all records are returned in one large list.
+    + page (INTEGER, optional) ... Requested page number used as URI parameter. Page count starts at zero, so 0 is the first page. If size is given without any page, page=0 is assumed as default.
+    + sort (TEXT, optional) ... Possible sort field is only: `transferDate`. If no sort is given, a random order has to be assumed that can change between calls.
+    + order (TEXT, optional) ... Sorting order can be either `asc` or `desc` (case insensitive), with `asc` as default. Sorting multiple fields at the same time is possible by comma-separating the sorting fields and their corresponding sort orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding order entries are considered to be asc.
+    + state (TEXT, optional) ... This call delivers all user payments in all states by default (no state parameter provided). It is possible to filter for certain payments by using the state URI parameter with possible values: created, open, spooled, closed, deleted. *(Functionality is currently not used in George)*
+    + channel (TEXT, optional) ... This call delivers all user payments entered via all channels (no channel parameter provided) or entered by user via specific channel (by default `GEORGE` should be used). It is possible to filter for certain payments by using the channel URI parameter with possible values: `GEORGE`, `MOBILE_APP`, `BUSINESS24`. *(Functionality is currently not provided in George AT)*
+
++ Model
+
+    + Body
+
+            {
+                "pageNumber": 0,
+                "pageCount": 2,
+                "nextPage": 1,
+                "pageSize": 100,
+                "accounts": [
+                    {
+                        "id": "043869409830000411024045",
+                        "orderCategory": "INTERNATIONAL",
+                        "orderType": "PAYMENT_OUT",
+                        "priority": "STANDARD",
+                        "state": "open",
+                        "stateDetail": "OPN",
+                        "sender": {
+                            "iban": "AT742099900000000018",
+                            "bic": "SPBAAT20XXX"
+                        },
+                        "senderName": "Mag. A. M. Mittermuster oder Felix",
+                        "endToEndId": {
+                            "senderReference": "INV-2014/8584"
+                        },    
+                        "receiver": {
+                            "iban": "AE060330000010195511161",
+                            "bic": "BOMLAEA0",
+                            "countryCode": "AE"
+                        },
+                        "receiverName": "Dubai Friend",
+                        "amount": {
+                            "value": 125000,
+                            "precision": 2,
+                            "currency": "USD"
+                        },
+                        "transferDate": "2014-12-15",
+                        "creationDate": "2014-12-09T23:11:00Z",
+                        "modificationDate": "2014-12-11T13:00:00Z",
+                        "additionalInfo": {
+                            "text": [
+                                "BOMLAEA0",
+                                "Arabic Emirates Flight"
+                            ]
+                        },
+                        "channelId": "GEORGE",
+                        "flags": [
+                        ]
+                    },
+                    {
+                        "id": "043721778790000001007101",
+                        "referenceId": "TRN-79988998",
+                        "orderCategory": "DOMESTIC",
+                        "orderType": "PAYMENT_OUT",
+                        "priority": "STANDARD",
+                        "state": "closed",
+                        "stateDetail": "FIH",
+                        "sender": {
+                            "iban": "AT602099900000005702",
+                            "bic": "SPBAAT20XXX"
+                        },
+                        "senderName": "Dkffr. Manfred Dichtl",
+                        "receiver": {
+                            "iban": "AT961100000976007260"
+                        },
+                        "receiverName": "Max Mustermann",
+                        "amount": {
+                            "value": 250,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "creationDate": "2014-11-09T23:11:00Z",
+                        "executionDate": "2014-11-09T00:00:00+02:00",          
+                        "valueDate": "2014-11-10T00:00:00+02:00",          
+                        "additionalInfo": {
+                            "paymentReference": "PayRef 754786-2014"
+                        },
+                        "channelId": "GEORGE"
+                    },
+                    {
+                        "id": "043721778790000001007777",
+                        "orderCategory": "DOMESTIC",
+                        "orderType": "DIRECT_DEBIT_IN",
+                        "priority": "STANDARD",
+                        "state": "open",
+                        "stateDetail": "OPN",
+                        "sender": {
+                            "iban": "AT961100000976007260"
+                        },
+                        "senderName": "Austria Telecom",
+                        "receiver": {
+                            "iban": "AT602099900000005702",
+                            "bic": "SPBAAT20XXX"
+                        },
+                        "receiverName": "Dkffr. Manfred Dichtl",
+                        "amount": {
+                            "value": 10000,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "creationDate": "2014-11-09T23:11:00Z",
+                        "modificationDate": "2014-11-15T00:00:00+02:00",          
+                        "additionalInfo": {
+                            "paymentReference": "Direct Debit - Invoice 2014/7463698"
+                        },
+                        "channelId": "UNKNOWN"
+                    },
+                    {
+                        "id": "CSAS-11024045",
+                        "orderCategory": "DOMESTIC",
+                        "orderType": "PAYMENT_OUT",
+                        "priority": "STANDARD",
+                        "state": "open",
+                        "sender": {
+                            "number": "19-123",
+                            "bankCode": "0800",
+                            "countryCode": "CZ"
+                        },
+                        "senderName": "Pepa Travnicek",
+                        "endToEndId": {
+                            "symbols": {
+                                "variableSymbol": "0123456789",
+                                "specificSymbol": "999999"
+                            }
+                        },
+                        "receiver": {
+                            "number": "123-123",
+                            "bankCode": "0100",
+                            "countryCode": "CZ"
+                        },
+                        "receiverName": "Dan Nekonecny",
+                        "amount": {
+                            "value": 125000,
+                            "precision": 2,
+                            "currency": "CZK"
+                        },
+                        "transferDate": "2014-11-14",
+                        "creationDate": "2014-11-10T23:11:00Z",
+                        "modificationDate": "2014-11-11T13:00:00Z",
+                        "additionalInfo": {
+                            "text": {
+                                "no nekup to"
+                            }
+                        },
+                        "channelId": "MOBILE_APP"
+                    }
+                ]
+            }
+
+### Get a list of payment orders for current user [GET]
+Get possibly empty list of all payment orders; open, scheduled, pending and closed ones; domestic and international, that have been entered from all user’s accounts through all distribution channels in the last 92 days (configuration parameter). This call is paginated and can be sorted.
+This call delivers all payment orders in all states entered via channel "George" as default. It is possible to filter for status of payment orders by using the *state* URI parameter or payments entered via all channels if *channel* URI parameter will be empty.
+
+See possible states used in AT in following tables:
+
+state     | Meaning
+--------- | --------------------
+`created` | Order state is a CreateState (CRE)
+`open`    | Order state is an OpenState (OPN, TAF, STO, KAG, SNM, NGA, ADB, AGB, OBG, UNG, BNZ, ENE)
+`spooled` | Order state is a SpoolState (INB, NGD, TRM, OFL, RPS, CHK)
+`closed`  | Order state is a ClosedState (FIN, FIH, FIM, FIX, FIR, FIK, FID, BLA, FUS, ABG, UNK, BLZ)
+none      | If no State is given, the complete list is delivered
+
+stateDetail | Meaning
+----------- | --------------------
+INB         | in process
+CRE         | created
+OPN         | open
+TAF         | TAN wrong
+STO         | cancelled
+KAG         | collective expired
+SNM         | service not possible
+NGA         | rejected not covered 
+ADB         | rejected by advisor (RPS)
+AGB         | rejected by bank code
+OBG         | rejected by max limit (SIGI)
+UNG         | rejected by min limit (SIGI)
+BNZ         | transfer not possible (SIGI)
+ENE         | deposit not possible (SIGI)
+NGD         | not covered
+TRM         | scheduled payment
+OFL         | offline payment
+RPS         | ready for approval
+CHK         | checked by spooler (RT-Host Ft.)
+FIN         | finalized neutral
+FIH         | finalized today
+FIM         | finalized tomorrow
+FIX         | finalized without disposing
+FIR         | finalized realtime host
+FIK         | finalized crisis region
+FID         | finalized dirty words
+BLA         | black list
+FUS         | finalized unknown
+ABG         | rejected
+UNK         | unknown state
+BLZ         | rapid payment bank code wrong
+
+**Note:** If a payment order is logically deleted, but still in a valid state, it has to be supressed and not deliverd by the API.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Payment List** with possibly empty array of *embedded* **Payment** items.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Payment List][]
+
+# Group Cards
+Card-related resources of *Banking Services API*.
+
+## Card [/netbanking/my/cards/{id}]
+Card type represents user card product of different card types (credit card, debit/bank card).
+
+*Marek's Note: Card resource definition in progress...* 
+
+## Card List [/netbanking/my/cards?{&size,page}?{&sort,order}?{feature}?{featureset}?{platformKey}?{noCache}]
+Resource Card List represents collection of cards to which authorized user has access.
+This resource consists of paging attributes and array of *embedded* **Card** type items.
+
+Description of **Card List** resource/type attributes: 
+
+| Level | Attribute name | Type/Enum        | Mand/Opt | Attribute description                                                | Expected values/format   |
+|-------|----------------|------------------|----------|----------------------------------------------------------------------|--------------------------|
+| 1     | pageNumber     | INTEGER          | M        | Page number of returned page, starting from 0 for the first page     |                          |
+| 1     | pageCount      | INTEGER          | M        | Total number of pages of defined size                                |                          |
+| 1     | nextPage       | INTEGER          | M        | Page number of following page                                        |                          |
+| 1     | pageSize       | INTEGER          | M        | Provided or defaulted page size                                      |                          |
+| 1     | cards          | ARRAY of CARD    | O        | Array of cards accessible by the user (could be empty)               |                          |
+
++ Parameters
+    + size (INTEGER, optional) ... Page size used as URI parameter. There is no predefined size limit. If it is omitted, all records are returned in one large list.
+    + page (INTEGER, optional) ... Requested page number used as URI parameter. Page count starts at zero, so 0 is the first page. If size is given without any page, page=0 is assumed as default.
+    + sort (TEXT, optional) ... Possible sort fields are: `id` and `productCode`. If no sort is given, a random order has to be assumed that can change between calls.
+    + order (TEXT, optional) ... Sorting order can be either `asc` or `desc` (case insensitive), with `asc` as default. Sorting multiple fields at the same time is possible by comma-separating the sorting fields and their corresponding sort orders. Sort priorities are left to right, so within the first field it is sorted by the second etc. Missing corresponding order entries are considered to be asc.
+    + feature (TEXT, optional) ... Optional (multi-valued) features. It is possible to filter for certain product by using the feature URI parameter optional comma-separated list of features.
+    + featureset (TEXT, optional) ... Optional Feature sets are to be used as handy shortcuts for certain set of features. If no feature-set is supplied, `NONE` is assumed as default.
+    + platformKey (TEXT, optional) ... Optional PlatformKey. If set, will return image ids for each card if appropriate mappings exist with the same platform key.
+    + noCache (TEXT, optional) ... Optional noCache. If set to `true`, will not use any cached values for this request (optional URI parameter, default is `false`).
+
++ Model
+
+    + Body
+
+            {
+                "pageNumber": 0,
+                "pageCount": 1,
+                "nextPage": 0,
+                "pageSize": 20,
+                "cards": [
+                    {
+                        "id": "CB5E22A9B81C6E04",
+                        "alias": "my gold card",
+                        "owner": "ELISABETH RICHTER",
+                        "number": "422093XXXXXX2416",
+                        "product": "s Visa Card Gold",
+                        "expiryDate": "2018-06-29T22:00:00Z",
+                        "limit": {
+                            "value": 300000,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "directDebitAccount": {
+                            "iban": "AT782099900001237957"
+                        },
+                        "flags": [
+                            "locked",
+                            "lockTheft",
+                            "CC",
+                            "main",
+                            "EBCC"
+                        ],
+                        "_shadowAccount": {
+                            "number": "70000118755"
+                        },
+                        "_shadowAccountId": "CD3FB47FE625310C",
+                        "creditCardShadowAccountId": "CD3FB47FE625310C",
+                        "creditCardDirectDebitAccountId": "CD3FB47FE625310C",
+                        "features": [
+                            "secureOnlineShopping",
+                            "invoiceDelivery",
+                            "reissueCard",
+                            "reissuePin",
+                            "smsNotifications",
+                            "watchDogs",
+                            "revolving",
+                            "authorizedCards"
+                        ],
+                        "state": "locked",
+                        "type": "credit",
+                        "provider": "ersteBank",
+                        "lockReason": "theft",
+                        "invoiceDeliveryMode": "postal",
+                        "smsNotificationActive": false,
+                        "cardDeliveryMode": "HOME",
+                        "characteristic": "MAIN",
+                        "secureOnlineShoppingEnabled": false
+                    },
+                    {
+                        "id": "C83AD63C3528640C",
+                        "owner": "ELISABETH RICHTER",
+                        "number": "01",
+                        "product": "Botenkarte",
+                        "limit": {
+                            "value": 0,
+                            "precision": 2,
+                            "currency": "EUR"
+                        },
+                        "flags": [
+                            "locked",
+                            "indoor"
+                        ]
+                    }
+                ]
+            }
+
+### Get a list of all cards for current user [GET]
+Get possibly empty list of all cards, credit cards and debit/bank cards. This call is paginated and can be sorted by `id` and `productCode`.
+This call delivers all cards in all states. It is possible to request/restrict additional information provided as output by using input *features* or *featureset* URI parameter.
+
+See possible **feature** and **featureset** values used in AT in following tables:
+
+Feature code                 | Description
+---------------------------- | -----------------------------------------------------
+`ACCOUNT_LINKAGE`            | Indicates that (additional) information about linked accounts for a bank card should be delivered.
+`REVOLVING`                  | Indicates that (additional) information about the support for the revolving function for a EB credit card should be delivered.
+`AUTHORIZED_CARDS`           | Indicates that (additional) information about the availability of authorized cards for a EB credit card should be delivered.
+`SB_DECKELUNGS_LIMIT_CHANGE` | Indicates that (additional) information about SB deckelungs limits for a bank card should be delivered.
+`CREDIT_CARD_LIMIT_CHANGE`   | Indicates that (additional) information about the support for the limit change function for a EB credit card should be delivered.
+`TEMPORARY_DEACTIVATION`     | Indicates that (additional) information about the support for the temporarily deactivation function for a EB credit card should be delivered.
+`REPLACEMENT_CARD`           | Indicates that (additional) information about the support for the replacement card function for a bank card should be delivered.
+`AVAILABLE_AMOUNT`           | Indicates that (additional) information about available amounts for a internal credit should be delivered.
+`ADDITIONAL_EXTERNAL_CREDIT_CARD_BALANCES` | Indicates that (additional) information about balances of external credit cards should be delivered.
+`ADDITIONAL_INTERNAL_CREDIT_CARD_BALANCES` | Indicates that (additional) information about about balances of internal credit cards should be delivered.
+
+Featureset code                 | Description
+------------------------------- | -----------------------------------------------------
+`NONE`                          | Indicates that no feature should be used.
+`ALL`                           | Indicates that all available features should be used.
+`ALL_NO_BALANCES`               | Indicates that all available features should be used but calls to getting balances.
+`ALL_NO_EXTERNAL_BALANCES`      | Indicates that all available features should be used but calls to getting external balances.
+`ALL_NO_INTERNAL_BALANCES`      | Indicates that all available features should be used but calls to getting internal balances.
+
+Local countries can use specific features and feature-sets, which will need George FE customization.
+
+#### Request
+**Authorization**: Authorization token (OAuth 2.0 Bearer - Base64 encoded HTTP header field) provided by Federated Login solution.
+
+#### Reply
+Resource **Card List** with possibly empty array of *embedded* **Card** items.
+
+#### Error codes
+No call-specific error codes.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer ya29.AHES67zeEn-RDg9CA5gGKMLKuG4uVB7W4O4WjNr-NBfY6Dtad4vbIZ
+
++ Response 200 (application/json)
+
+    [Card List][]
